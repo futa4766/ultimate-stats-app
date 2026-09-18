@@ -81,7 +81,6 @@ interface TournamentData {
   matches: MatchData[];
   activeMatchId: string;
   groups: MatchGroup[];
-  roster: RosterData;
   awards: TournamentAward[];
 }
 
@@ -92,6 +91,8 @@ interface AppState {
   sortMode: "reg" | "number";
   headerCollapsed?: boolean;
   themeColor?: string;
+  roster: RosterData;
+  view: "tournament" | "roster" | "settings";
 }
 
 interface LastAction {
@@ -136,10 +137,8 @@ interface UIState {
 
 const STORAGE_KEY = "ultimateStatsAppTsxV1";
 const ALL_ID = "__ALL__";
-const ROSTER_ID = "__ROSTER__";
-const SETTINGS_ID = "__SETTINGS__";
 const DEFAULT_PITCH = "#1B4332";
-const APP_VERSION = "1.0";
+const APP_VERSION = "1.1";
 
 function defaultAwards(): TournamentAward[] {
   return ["MVP", "敢闘賞", "アシスト王", "得点王", "スコアリーダー"].map((name) => ({ id: uid(), name, playerName: "" }));
@@ -205,12 +204,46 @@ function defaultMatch(name?: string): MatchData {
 
 function defaultTournament(name?: string): TournamentData {
   const m = defaultMatch();
-  return { id: uid(), name: name || `${todayLabel()} 大会`, matches: [m], activeMatchId: m.id, groups: [], roster: defaultRoster(), awards: defaultAwards() };
+  return { id: uid(), name: name || `${todayLabel()} 大会`, matches: [m], activeMatchId: m.id, groups: [], awards: defaultAwards() };
 }
 
 function defaultState(): AppState {
   const t = defaultTournament();
-  return { tournaments: [t], activeTournamentId: t.id, mode: "add", sortMode: "reg", headerCollapsed: false };
+  return { tournaments: [t], activeTournamentId: t.id, mode: "add", sortMode: "reg", headerCollapsed: false, roster: defaultRoster(), view: "tournament" };
+}
+
+// 旧バージョン（大会ごとの名簿）からの移行：全大会の名簿を選手名で名寄せしながら1つの共通名簿にまとめる
+function migrateRosterToGlobal(parsed: any): RosterData {
+  if (parsed.roster && Array.isArray(parsed.roster.columns)) return parsed.roster;
+  const merged = defaultRoster();
+  const colIdByName: Record<string, string> = {};
+  merged.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
+  const rowByName: Record<string, RosterRow> = {};
+  (parsed.tournaments || []).forEach((t: any) => {
+    if (t.roster && Array.isArray(t.roster.columns) && Array.isArray(t.roster.rows)) {
+      const oldColNameById: Record<string, string> = {};
+      t.roster.columns.forEach((c: RosterColumn) => { if (!c.locked) oldColNameById[c.id] = c.name; });
+      t.roster.rows.forEach((r: RosterRow) => {
+        const name = (r.values["name"] || "").trim();
+        if (!name) return;
+        if (!rowByName[name]) rowByName[name] = { id: uid(), values: { number: r.values["number"] || "", name } };
+        const target = rowByName[name];
+        Object.keys(r.values).forEach((k) => {
+          if (k === "number" || k === "name") return;
+          const colName = oldColNameById[k];
+          if (!colName) return;
+          if (!colIdByName[colName]) {
+            const newCol: RosterColumn = { id: uid(), name: colName };
+            merged.columns.push(newCol);
+            colIdByName[colName] = newCol.id;
+          }
+          if (r.values[k]) target.values[colIdByName[colName]] = r.values[k];
+        });
+      });
+    }
+  });
+  merged.rows = Object.values(rowByName);
+  return merged;
 }
 
 function loadState(): AppState {
@@ -219,11 +252,14 @@ function loadState(): AppState {
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.tournaments) && parsed.tournaments.length > 0) {
+      const roster = migrateRosterToGlobal(parsed);
       parsed.tournaments.forEach((t: TournamentData) => {
         if (!Array.isArray(t.groups)) t.groups = [];
-        if (!t.roster || !Array.isArray(t.roster.columns)) t.roster = defaultRoster();
         if (!Array.isArray(t.awards)) t.awards = defaultAwards();
+        delete (t as any).roster;
       });
+      parsed.roster = roster;
+      if (parsed.view !== "tournament" && parsed.view !== "roster" && parsed.view !== "settings") parsed.view = "tournament";
       return parsed;
     }
     return defaultState();
@@ -493,8 +529,8 @@ export default function App() {
     state.tournaments.find((t) => t.id === state.activeTournamentId) || state.tournaments[0];
   const t = activeTournament();
   const activeMatch = (): MatchData => t.matches.find((m) => m.id === t.activeMatchId) || t.matches[0];
-  const isRosterView = t.activeMatchId === ROSTER_ID;
-  const isSettingsView = t.activeMatchId === SETTINGS_ID;
+  const isRosterView = state.view === "roster";
+  const isSettingsView = state.view === "settings";
   const isAllView = !isRosterView && !isSettingsView && (t.activeMatchId === ALL_ID || t.matches.length === 0);
   const match = !isAllView && !isRosterView && !isSettingsView ? activeMatch() : null;
 
@@ -612,6 +648,7 @@ export default function App() {
     updateState((s) => {
       const { tt } = withActive(s);
       tt.activeMatchId = id;
+      s.view = "tournament";
     });
     patchUi({
       addingRosterColumn: false,
@@ -644,6 +681,7 @@ export default function App() {
       tt.activeMatchId = ALL_ID;
       s.tournaments.push(tt);
       s.activeTournamentId = tt.id;
+      s.view = "tournament";
     });
     patchUi({ newTournamentOpen: false });
   };
@@ -667,13 +705,24 @@ export default function App() {
   };
 
   const selectTournament = (id: string) => {
-    updateState((s) => { s.activeTournamentId = id; });
+    updateState((s) => { s.activeTournamentId = id; s.view = "tournament"; });
     patchUi({
       addingRosterColumn: false,
       addPlayerOpen: false, renamingMatch: false, renamingTournament: false, editingPlayerId: null,
       confirmDeletePlayer: null, confirmDeleteMatch: null, copyOpen: false, copySourceKey: null, copySelected: {},
       rosterPickOpen: false, rosterPickSelected: {},
       newMatchOpen: false,
+      filterOpen: false, filterDraft: {}, filterLoadedGroupId: null, savingGroupNameOpen: false, confirmDeleteGroup: null,
+    });
+  };
+
+  const selectGlobalView = (view: "roster" | "settings") => {
+    updateState((s) => { s.view = view; });
+    patchUi({
+      addingRosterColumn: false,
+      addPlayerOpen: false, renamingMatch: false, renamingTournament: false, editingPlayerId: null,
+      confirmDeletePlayer: null, confirmDeleteMatch: null, copyOpen: false, copySourceKey: null, copySelected: {},
+      rosterPickOpen: false, rosterPickSelected: {}, newMatchOpen: false, newTournamentOpen: false,
       filterOpen: false, filterDraft: {}, filterLoadedGroupId: null, savingGroupNameOpen: false, confirmDeleteGroup: null,
     });
   };
@@ -727,9 +776,9 @@ export default function App() {
   const addPlayersFromRoster = (selected: Record<string, boolean>) => {
     let added = 0;
     updateState((s) => {
-      const { tt, mm } = withActive(s);
+      const { mm } = withActive(s);
       const existingNames = mm.players.map((p) => p.name.trim());
-      tt.roster.rows.forEach((r) => {
+      s.roster.rows.forEach((r) => {
         if (!selected[r.id]) return;
         const name = (r.values["name"] || "").trim();
         if (!name) return;
@@ -766,48 +815,42 @@ export default function App() {
     patchUi({ confirmDeleteGroup: null });
   };
 
-  // ---- roster (選手名簿) ----
+  // ---- roster (選手名簿) — 全大会共通 ----
   const addRosterRow = () => {
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      tt.roster.rows.push({ id: uid(), values: {} });
+      s.roster.rows.push({ id: uid(), values: {} });
     });
   };
   const deleteRosterRow = (rowId: string) => {
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      tt.roster.rows = tt.roster.rows.filter((r) => r.id !== rowId);
+      s.roster.rows = s.roster.rows.filter((r) => r.id !== rowId);
     });
   };
   const updateRosterCell = (rowId: string, colId: string, value: string) => {
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      const row = tt.roster.rows.find((r) => r.id === rowId);
+      const row = s.roster.rows.find((r) => r.id === rowId);
       if (row) row.values[colId] = value;
     });
   };
   const addRosterColumn = (name: string) => {
     if (!name || !name.trim()) return;
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      tt.roster.columns.push({ id: uid(), name: name.trim() });
+      s.roster.columns.push({ id: uid(), name: name.trim() });
     });
     patchUi({ addingRosterColumn: false });
   };
   const renameRosterColumn = (colId: string, name: string) => {
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      const col = tt.roster.columns.find((c) => c.id === colId);
+      const col = s.roster.columns.find((c) => c.id === colId);
       if (col && !col.locked && name.trim()) col.name = name.trim();
     });
   };
   const deleteRosterColumn = (colId: string) => {
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
-      const col = tt.roster.columns.find((c) => c.id === colId);
+      const col = s.roster.columns.find((c) => c.id === colId);
       if (!col || col.locked) return;
-      tt.roster.columns = tt.roster.columns.filter((c) => c.id !== colId);
-      tt.roster.rows.forEach((r) => { delete r.values[colId]; });
+      s.roster.columns = s.roster.columns.filter((c) => c.id !== colId);
+      s.roster.rows.forEach((r) => { delete r.values[colId]; });
     });
   };
   const copyRosterToClipboard = (roster: RosterData) => {
@@ -824,12 +867,12 @@ export default function App() {
     }
   };
 
-  const exportRosterCSV = (roster: RosterData, tournamentName: string) => {
+  const exportRosterCSV = (roster: RosterData) => {
     if (!roster.rows.length) { showToast("名簿に選手がいません"); return; }
     const headers = roster.columns.map((c) => c.name);
     const bodyRows = roster.rows.map((r) => roster.columns.map((c) => r.values[c.id] || ""));
     const csv = "\uFEFF" + [headers, ...bodyRows].map((r) => r.map(csvEscape).join(",")).join("\r\n");
-    downloadTextFile(csv, `${sanitizeFilename(tournamentName)}_選手名簿.csv`, "text/csv;charset=utf-8;");
+    downloadTextFile(csv, "選手名簿.csv", "text/csv;charset=utf-8;");
     showToast("CSVを保存しました");
   };
 
@@ -848,15 +891,14 @@ export default function App() {
       const dataRows = hasHeader ? grid.slice(1) : grid;
       let added = 0, updated = 0;
       updateState((s) => {
-        const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
         const colIdByName: Record<string, string> = {};
-        tt.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
+        s.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
         if (headerRow) {
           headerRow.slice(2).forEach((h) => {
             const name = (h || "").trim();
             if (!name || colIdByName[name]) return;
             const newCol: RosterColumn = { id: uid(), name };
-            tt.roster.columns.push(newCol);
+            s.roster.columns.push(newCol);
             colIdByName[name] = newCol.id;
           });
         }
@@ -864,8 +906,8 @@ export default function App() {
           const number = (cells[0] || "").trim();
           const name = (cells[1] || "").trim();
           if (!name) return;
-          let target = tt.roster.rows.find((r) => (r.values["name"] || "").trim() === name);
-          if (!target) { target = { id: uid(), values: {} }; tt.roster.rows.push(target); added++; }
+          let target = s.roster.rows.find((r) => (r.values["name"] || "").trim() === name);
+          if (!target) { target = { id: uid(), values: {} }; s.roster.rows.push(target); added++; }
           else updated++;
           target.values["number"] = number;
           target.values["name"] = name;
@@ -877,13 +919,13 @@ export default function App() {
               if (v !== undefined) target!.values[colIdByName[hn]] = v.trim();
             });
           } else {
-            const nonLocked = tt.roster.columns.filter((c) => !c.locked);
+            const nonLocked = s.roster.columns.filter((c) => !c.locked);
             for (let i = 2; i < cells.length; i++) {
               const posIndex = i - 2;
               let col = nonLocked[posIndex];
               if (!col) {
                 col = { id: uid(), name: `列${posIndex + 1}` };
-                tt.roster.columns.push(col);
+                s.roster.columns.push(col);
                 nonLocked.push(col);
               }
               target!.values[col.id] = (cells[i] || "").trim();
@@ -905,22 +947,21 @@ export default function App() {
     const headerRow = topLeftHeader ? grid[0] : null;
     const dataGrid = topLeftHeader ? grid.slice(1) : grid;
     updateState((s) => {
-      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
       const colIdByName: Record<string, string> = {};
-      tt.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
+      s.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
       if (headerRow) {
         headerRow.slice(2).forEach((h) => {
           const name = (h || "").trim();
           if (!name || colIdByName[name]) return;
           const newCol: RosterColumn = { id: uid(), name };
-          tt.roster.columns.push(newCol);
+          s.roster.columns.push(newCol);
           colIdByName[name] = newCol.id;
         });
       }
       dataGrid.forEach((rowCells, r) => {
         const targetRowIndex = anchorRow + r;
-        while (tt.roster.rows.length <= targetRowIndex) tt.roster.rows.push({ id: uid(), values: {} });
-        const targetRow = tt.roster.rows[targetRowIndex];
+        while (s.roster.rows.length <= targetRowIndex) s.roster.rows.push({ id: uid(), values: {} });
+        const targetRow = s.roster.rows[targetRowIndex];
         rowCells.forEach((cellVal, c) => {
           const targetColIndex = anchorCol + c;
           const v = (cellVal || "").trim();
@@ -932,12 +973,12 @@ export default function App() {
             const colId = colIdByName[hn];
             if (colId) targetRow.values[colId] = v;
           } else {
-            const nonLocked = tt.roster.columns.filter((c2) => !c2.locked);
+            const nonLocked = s.roster.columns.filter((c2) => !c2.locked);
             const posIndex = targetColIndex - 2;
             let col = nonLocked[posIndex];
             if (!col) {
               col = { id: uid(), name: `列${posIndex + 1}` };
-              tt.roster.columns.push(col);
+              s.roster.columns.push(col);
             }
             targetRow.values[col.id] = v;
           }
@@ -1124,11 +1165,24 @@ export default function App() {
 
           {state.headerCollapsed ? (
             <div className="usa-hdr-summary" onClick={toggleHeaderCollapsed}>
-              <span className="ctx"><img className="icon-img" src={TROPHY_ICON} alt="" /> {t.name} ▸ {isSettingsView ? "⚙️ 設定" : isRosterView ? "📋 選手名簿" : isAllView ? <><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計</> : match!.name}</span>
+              <span className="ctx">
+                {isSettingsView ? "⚙️ 設定" : isRosterView ? "📋 選手名簿" : (
+                  <><img className="icon-img" src={TROPHY_ICON} alt="" /> {t.name} ▸ {isAllView ? <><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計</> : match!.name}</>
+                )}
+              </span>
               <span className="hint">タップで展開 ▾</span>
             </div>
           ) : (
             <>
+              <div className="usa-global-nav">
+                <div className={"usa-tab pinned" + (isRosterView ? " active" : "")} onClick={() => selectGlobalView("roster")}>
+                  <span>📋 選手名簿</span>
+                </div>
+                <div className={"usa-tab pinned" + (isSettingsView ? " active" : "")} onClick={() => selectGlobalView("settings")}>
+                  <span>⚙️ 設定</span>
+                </div>
+              </div>
+
               <div className="usa-tabs">
                 {state.tournaments.map((tt) => (
                   ui.confirmDeleteTournament === tt.id ? (
@@ -1138,7 +1192,7 @@ export default function App() {
                       <button className="x" onClick={() => patchUi({ confirmDeleteTournament: null })}>✕</button>
                     </div>
                   ) : (
-                    <div key={tt.id} className={"usa-tab tourney" + (tt.id === t.id ? " active" : "")} onClick={() => selectTournament(tt.id)}>
+                    <div key={tt.id} className={"usa-tab tourney" + (state.view === "tournament" && tt.id === t.id ? " active" : "")} onClick={() => selectTournament(tt.id)}>
                       <span><img className="icon-img" src={TROPHY_ICON} alt="" /> {tt.name}</span>
                       {state.tournaments.length > 1 && (
                         <button className="x" onClick={(e) => { e.stopPropagation(); patchUi({ confirmDeleteTournament: tt.id }); }}>✕</button>
@@ -1153,97 +1207,92 @@ export default function App() {
                 )}
               </div>
 
-              <div className="usa-hdr-bottom tourney-row">
-                {ui.renamingTournament ? (
-                  <RenameForm value={t.name} onConfirm={renameTournament} onCancel={() => patchUi({ renamingTournament: false })} />
-                ) : (
-                  <>
-                    <div className="usa-match-title tourney">{t.name} · {t.matches.length}試合</div>
-                    <button className="usa-icon-btn" title="大会名を編集" onClick={() => patchUi({ renamingTournament: true })}>✎</button>
-                  </>
-                )}
-              </div>
+              {state.view === "tournament" && (
+                <>
+                  <div className="usa-hdr-bottom tourney-row">
+                    {ui.renamingTournament ? (
+                      <RenameForm value={t.name} onConfirm={renameTournament} onCancel={() => patchUi({ renamingTournament: false })} />
+                    ) : (
+                      <>
+                        <div className="usa-match-title tourney">{t.name} · {t.matches.length}試合</div>
+                        <button className="usa-icon-btn" title="大会名を編集" onClick={() => patchUi({ renamingTournament: true })}>✎</button>
+                      </>
+                    )}
+                  </div>
 
-              <div className="usa-tabs">
-                <div className={"usa-tab pinned" + (isAllView ? " active" : "")} onClick={() => selectMatch(ALL_ID)}>
-                  <span><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計</span>
-                </div>
-                <div className={"usa-tab pinned" + (isRosterView ? " active" : "")} onClick={() => selectMatch(ROSTER_ID)}>
-                  <span>📋 選手名簿</span>
-                </div>
-                <div className={"usa-tab pinned" + (isSettingsView ? " active" : "")} onClick={() => selectMatch(SETTINGS_ID)}>
-                  <span>⚙️ 設定</span>
-                </div>
-                <div className="usa-tab-sep" />
-                {t.matches.map((mm) => (
-                  ui.confirmDeleteMatch === mm.id ? (
-                    <div key={mm.id} className="usa-tab active" style={{ background: "var(--usa-miss)", color: "#fff" }}>
-                      <span>削除する？</span>
-                      <button className="x" style={{ opacity: 1 }} onClick={() => deleteMatch(mm.id)}>✔</button>
-                      <button className="x" onClick={() => patchUi({ confirmDeleteMatch: null })}>✕</button>
+                  <div className="usa-tabs">
+                    <div className={"usa-tab pinned" + (isAllView ? " active" : "")} onClick={() => selectMatch(ALL_ID)}>
+                      <span><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計</span>
                     </div>
-                  ) : (
-                    <div key={mm.id} className={"usa-tab" + (!isAllView && mm.id === t.activeMatchId ? " active" : "")} onClick={() => selectMatch(mm.id)}>
-                      <span>{mm.name}</span>
-                      <button className="x" onClick={(e) => { e.stopPropagation(); patchUi({ confirmDeleteMatch: mm.id }); }}>✕</button>
-                    </div>
-                  )
-                ))}
-                {ui.newMatchOpen ? (
-                  <NewTabForm placeholder={`${todayLabel()} 試合`} onConfirm={addMatch} onCancel={() => patchUi({ newMatchOpen: false })} />
-                ) : (
-                  <button className="usa-tab-new" onClick={() => patchUi({ newMatchOpen: true })}>＋ 新しい試合</button>
-                )}
-              </div>
+                    <div className="usa-tab-sep" />
+                    {t.matches.map((mm) => (
+                      ui.confirmDeleteMatch === mm.id ? (
+                        <div key={mm.id} className="usa-tab active" style={{ background: "var(--usa-miss)", color: "#fff" }}>
+                          <span>削除する？</span>
+                          <button className="x" style={{ opacity: 1 }} onClick={() => deleteMatch(mm.id)}>✔</button>
+                          <button className="x" onClick={() => patchUi({ confirmDeleteMatch: null })}>✕</button>
+                        </div>
+                      ) : (
+                        <div key={mm.id} className={"usa-tab" + (!isAllView && mm.id === t.activeMatchId ? " active" : "")} onClick={() => selectMatch(mm.id)}>
+                          <span>{mm.name}</span>
+                          <button className="x" onClick={(e) => { e.stopPropagation(); patchUi({ confirmDeleteMatch: mm.id }); }}>✕</button>
+                        </div>
+                      )
+                    ))}
+                    {ui.newMatchOpen ? (
+                      <NewTabForm placeholder={`${todayLabel()} 試合`} onConfirm={addMatch} onCancel={() => patchUi({ newMatchOpen: false })} />
+                    ) : (
+                      <button className="usa-tab-new" onClick={() => patchUi({ newMatchOpen: true })}>＋ 新しい試合</button>
+                    )}
+                  </div>
 
-              <div className="usa-hdr-bottom">
-                {isSettingsView ? (
-                  <div className="usa-match-title">⚙️ 設定</div>
-                ) : isRosterView ? (
-                  <div className="usa-match-title">📋 選手名簿 · {t.roster.rows.length}人</div>
-                ) : isAllView ? (
-                  <>
-                    <div className="usa-match-title"><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計 · {aggRows.length}人 · 全{t.matches.length}試合</div>
-                    <SortButton sortMode={state.sortMode} onClick={toggleSort} />
-                  </>
-                ) : ui.renamingMatch ? (
-                  <RenameForm value={match!.name} onConfirm={renameMatch} onCancel={() => patchUi({ renamingMatch: false })} />
-                ) : (
-                  <>
-                    <div className="usa-match-title">{match!.name} · {match!.players.length}人</div>
-                    <SortButton sortMode={state.sortMode} onClick={toggleSort} />
-                    <button className="usa-icon-btn" title="試合名を編集" onClick={() => patchUi({ renamingMatch: true })}>✎</button>
-                  </>
-                )}
-              </div>
+                  <div className="usa-hdr-bottom">
+                    {isAllView ? (
+                      <>
+                        <div className="usa-match-title"><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計 · {aggRows.length}人 · 全{t.matches.length}試合</div>
+                        <SortButton sortMode={state.sortMode} onClick={toggleSort} />
+                      </>
+                    ) : ui.renamingMatch ? (
+                      <RenameForm value={match!.name} onConfirm={renameMatch} onCancel={() => patchUi({ renamingMatch: false })} />
+                    ) : (
+                      <>
+                        <div className="usa-match-title">{match!.name} · {match!.players.length}人</div>
+                        <SortButton sortMode={state.sortMode} onClick={toggleSort} />
+                        <button className="usa-icon-btn" title="試合名を編集" onClick={() => patchUi({ renamingMatch: true })}>✎</button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           )}
         </header>
 
         <div className="usa-print-title">
-          <div className="t1">🥏 {t.name} ▸ {isSettingsView ? "設定" : isRosterView ? "選手名簿" : isAllView ? "大会全体の集計" : match!.name}</div>
+          <div className="t1">🥏 {isSettingsView ? "設定" : isRosterView ? "選手名簿" : <>{t.name} ▸ {isAllView ? "大会全体の集計" : match!.name}</>}</div>
           <div className="t2">出力日時: {printStamp}</div>
         </div>
 
         <main className="usa-main" style={{ ["--usa-hdr-h" as any]: `${hdrH}px` }}>
           {isSettingsView ? (
             <SettingsView
-              state={state} t={t} ui={ui} patchUi={patchUi}
+              state={state} ui={ui} patchUi={patchUi}
               setThemeColor={setThemeColor}
               exportRosterCSV={exportRosterCSV} importRosterCSV={importRosterCSV}
               exportAllDataCSV={exportAllDataCSV} importAllDataCSV={importAllDataCSV}
             />
           ) : isRosterView ? (
             <RosterView
-              roster={t.roster} ui={ui} patchUi={patchUi}
+              roster={state.roster} ui={ui} patchUi={patchUi}
               deleteRosterRow={deleteRosterRow} updateRosterCell={updateRosterCell}
               addRosterColumn={addRosterColumn} renameRosterColumn={renameRosterColumn} deleteRosterColumn={deleteRosterColumn}
               importRosterCSV={importRosterCSV} pasteRosterGrid={pasteRosterGrid}
             />
           ) : isAllView ? (
             <AggregateView
-              aggRows={aggRows} roster={t.roster} awards={t.awards} ui={ui} patchUi={patchUi}
+              aggRows={aggRows} roster={state.roster} awards={t.awards} ui={ui} patchUi={patchUi}
               setAwardWinner={setAwardWinner} addAward={addAward} renameAward={renameAward} deleteAward={deleteAward}
+              exportCSV={exportCSV} printPage={printPage}
             />
           ) : match!.players.length === 0 ? (
             <>
@@ -1253,7 +1302,7 @@ export default function App() {
               <AddPlayerArea
                 ui={ui} patchUi={patchUi} addPlayer={addPlayer} allOtherMatches={allOtherMatches}
                 copyPlayersFrom={copyPlayersFrom} findMatchByKey={findMatchByKey}
-                roster={t.roster} addPlayersFromRoster={addPlayersFromRoster}
+                roster={state.roster} addPlayersFromRoster={addPlayersFromRoster}
               />
             </>
           ) : (
@@ -1264,6 +1313,7 @@ export default function App() {
                   applyFilter={applyFilter} clearFilter={clearFilter}
                   saveGroup={saveGroup} updateGroup={updateGroup} deleteGroup={deleteGroup}
                   showToast={showToast}
+                  mode={state.mode} setMode={setMode} undo={undo} undoCount={undoStack.length}
                 />
               )}
               {players.length === 0 ? (
@@ -1297,39 +1347,28 @@ export default function App() {
               <AddPlayerArea
                 ui={ui} patchUi={patchUi} addPlayer={addPlayer} allOtherMatches={allOtherMatches}
                 copyPlayersFrom={copyPlayersFrom} findMatchByKey={findMatchByKey}
-                roster={t.roster} addPlayersFromRoster={addPlayersFromRoster}
+                roster={state.roster} addPlayersFromRoster={addPlayersFromRoster}
               />
+              <div className="usa-bottom-actions">
+                <button className="usa-tool-btn" onClick={printPage}>PDF書き出し</button>
+                <button className="usa-tool-btn primary" onClick={exportCSV}>CSV書き出し</button>
+              </div>
             </>
           )}
         </main>
 
-        <footer className="usa-toolbar">
-          {isSettingsView ? (
-            <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>設定は自動的に保存されます</span>
-          ) : isRosterView ? (
-            <>
-              <button className="usa-tool-btn" onClick={addRosterRow}>＋ 行を追加</button>
-              <button className="usa-tool-btn primary" onClick={() => copyRosterToClipboard(t.roster)}>📋 コピー</button>
-            </>
-          ) : isAllView ? (
-            <>
-              <button className="usa-tool-btn" onClick={printPage}>PDF書き出し</button>
-              <button className="usa-tool-btn primary" onClick={exportCSV}>CSV書き出し</button>
-            </>
-          ) : (
-            <>
-              <div className="usa-mode-toggle">
-                <button className={state.mode === "add" ? "active" : ""} onClick={() => setMode("add")}>＋1</button>
-                <button className={state.mode === "sub" ? "active" : ""} onClick={() => setMode("sub")}>－1</button>
-              </div>
-              <button className="usa-tool-btn" disabled={undoStack.length === 0} onClick={undo} title="直近の操作を1つずつ元に戻します（最大10件）">
-                元に戻す{undoStack.length > 0 ? ` (${undoStack.length})` : ""}
-              </button>
-              <button className="usa-tool-btn" onClick={printPage}>PDF</button>
-              <button className="usa-tool-btn primary" onClick={exportCSV}>CSV書き出し</button>
-            </>
-          )}
-        </footer>
+        {(isSettingsView || isRosterView) && (
+          <footer className="usa-toolbar">
+            {isSettingsView ? (
+              <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>設定は自動的に保存されます</span>
+            ) : (
+              <>
+                <button className="usa-tool-btn" onClick={addRosterRow}>＋ 行を追加</button>
+                <button className="usa-tool-btn primary" onClick={() => copyRosterToClipboard(state.roster)}>📋 コピー</button>
+              </>
+            )}
+          </footer>
+        )}
       </div>
 
       {toast && <div className="usa-toast-root"><div className="usa-toast show">{toast}</div></div>}
@@ -1379,10 +1418,11 @@ function RenameForm({ value, onConfirm, onCancel }: { value: string; onConfirm: 
 
 // ---- aggregate (大会全体の集計) view ----
 
-function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, addAward, renameAward, deleteAward }: {
+function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, addAward, renameAward, deleteAward, exportCSV, printPage }: {
   aggRows: AggRow[]; roster: RosterData; awards: TournamentAward[]; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   setAwardWinner: (awardId: string, playerName: string) => void;
   addAward: (name: string) => void; renameAward: (awardId: string, name: string) => void; deleteAward: (awardId: string) => void;
+  exportCSV: () => void; printPage: () => void;
 }) {
   if (aggRows.length === 0) {
     return (
@@ -1423,21 +1463,6 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
 
   return (
     <>
-      <div className="usa-panel">
-        <div className="usa-panel-title">🏅 個人賞</div>
-        <div className="usa-award-list">
-          {awards.map((a) => (
-            <AwardRow key={a.id} award={a} aggRows={aggRows} onSetWinner={setAwardWinner} onRename={renameAward} onDelete={deleteAward} />
-          ))}
-        </div>
-        {ui.addingAward ? (
-          <NewColumnForm onConfirm={addAward} onCancel={() => patchUi({ addingAward: false })} placeholder="賞名" />
-        ) : (
-          <button className="usa-tool-btn" style={{ padding: "6px 10px", fontSize: 12, marginTop: 6 }} onClick={() => patchUi({ addingAward: true })}>＋ 賞を追加</button>
-        )}
-        <div className="usa-panel-hint" style={{ marginTop: 8, marginBottom: 0 }}>1人が複数の賞を受賞してもかまいません。</div>
-      </div>
-
       {extraCols.length > 0 ? (
         <div className="usa-filter-bar">
           <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>名簿の列を表示:</span>
@@ -1517,8 +1542,26 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
           </table>
         </div>
       )}
+      <div className="usa-panel">
+        <div className="usa-panel-title">🏅 個人賞</div>
+        <div className="usa-award-list">
+          {awards.map((a) => (
+            <AwardRow key={a.id} award={a} aggRows={aggRows} onSetWinner={setAwardWinner} onRename={renameAward} onDelete={deleteAward} />
+          ))}
+        </div>
+        {ui.addingAward ? (
+          <NewColumnForm onConfirm={addAward} onCancel={() => patchUi({ addingAward: false })} placeholder="賞名" />
+        ) : (
+          <button className="usa-tool-btn" style={{ padding: "6px 10px", fontSize: 12, marginTop: 6 }} onClick={() => patchUi({ addingAward: true })}>＋ 賞を追加</button>
+        )}
+        <div className="usa-panel-hint" style={{ marginTop: 8, marginBottom: 0 }}>1人が複数の賞を受賞してもかまいません。</div>
+      </div>
       <div className="usa-empty" style={{ textAlign: "left", fontSize: 12, marginTop: 12 }}>
         選手は名前で名寄せして合計しています。同じ選手は各試合で同じ名前で登録してください。列見出しをタップすると、その項目で並び替えできます。
+      </div>
+      <div className="usa-bottom-actions">
+        <button className="usa-tool-btn" onClick={printPage}>PDF書き出し</button>
+        <button className="usa-tool-btn primary" onClick={exportCSV}>CSV書き出し</button>
       </div>
     </>
   );
@@ -1528,10 +1571,10 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
 
 const PRESET_COLORS = ["#1B4332", "#0B4F6C", "#7A1F2B", "#3D2C8D", "#B5541B", "#1B1B1B", "#2D6A4F", "#B08D00"];
 
-function SettingsView({ state, t, ui, patchUi, setThemeColor, exportRosterCSV, importRosterCSV, exportAllDataCSV, importAllDataCSV }: {
-  state: AppState; t: TournamentData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
+function SettingsView({ state, ui, patchUi, setThemeColor, exportRosterCSV, importRosterCSV, exportAllDataCSV, importAllDataCSV }: {
+  state: AppState; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   setThemeColor: (color: string | undefined) => void;
-  exportRosterCSV: (roster: RosterData, tournamentName: string) => void;
+  exportRosterCSV: (roster: RosterData) => void;
   importRosterCSV: (file: File) => void;
   exportAllDataCSV: () => void;
   importAllDataCSV: (file: File) => void;
@@ -1553,10 +1596,10 @@ function SettingsView({ state, t, ui, patchUi, setThemeColor, exportRosterCSV, i
       </div>
 
       <div className="usa-panel">
-        <div className="usa-panel-title">📋 選手名簿の入出力（{t.name}）</div>
+        <div className="usa-panel-title">📋 選手名簿の入出力（全大会共通）</div>
         <div className="usa-panel-hint">名簿の全列（背番号・名前・追加した列すべて）をCSVで書き出せます。取り込みは1列目→背番号、2列目→名前として扱います。ヘッダー行があれば見出し名で列を自動作成、無ければそのままの順番で既存の列に取り込みます（すでにある名前の選手は内容を上書き更新します）。表計算ソフトの表を選手名簿画面の左上のセルに直接貼り付けることもできます。</div>
         <div className="usa-panel-actions" style={{ justifyContent: "flex-start", marginBottom: 10 }}>
-          <button className="usa-btn primary" onClick={() => exportRosterCSV(t.roster, t.name)}>CSV書き出し</button>
+          <button className="usa-btn primary" onClick={() => exportRosterCSV(state.roster)}>CSV書き出し</button>
         </div>
         <div className="file-input-wrap">
           <input type="file" accept=".csv,text/csv" onChange={(e) => patchUi({ rosterCsvFile: e.target.files && e.target.files[0] ? e.target.files[0] : null })} />
@@ -1607,7 +1650,7 @@ function RosterView({ roster, ui, patchUi, deleteRosterRow, updateRosterCell, ad
         名簿は表形式で編集できます。列は自由に追加できますが、スタッツで使われるのは最初の2列（背番号・名前）だけです。「📋 コピー」で表の内容をタブ区切りテキストとしてコピーでき、表計算ソフトにそのまま貼り付けられます。逆に、表計算ソフトの内容をコピーしてこの表のセルに貼り付けることもできます（貼り付けたセルを起点に展開されます）。「📄 CSVを読み込む」で、ヘッダー行がある／ないどちらのCSVファイルも取り込めます。
       </div>
       <div className="usa-action-row">
-        <button className="usa-add-cta" onClick={() => fileInputRef.current?.click()}>📄 CSVを読み込む</button>
+        <button className="usa-tool-btn primary" onClick={() => fileInputRef.current?.click()}>📄 CSVを読み込む</button>
         <input
           ref={fileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }}
           onChange={(e) => {
@@ -1823,13 +1866,14 @@ function EditRow({ p, onSave, onCancel }: { p: Player; onSave: (id: string, name
 
 // ---- lineup filter / saved groups ----
 
-function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup, updateGroup, deleteGroup, showToast }: {
+function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup, updateGroup, deleteGroup, showToast, mode, setMode, undo, undoCount }: {
   match: MatchData; t: TournamentData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   applyFilter: (names: string[]) => void; clearFilter: () => void;
   saveGroup: (name: string, memberNames: string[]) => void;
   updateGroup: (groupId: string, memberNames: string[]) => void;
   deleteGroup: (groupId: string) => void;
   showToast: (msg: string) => void;
+  mode: "add" | "sub"; setMode: (mode: "add" | "sub") => void; undo: () => void; undoCount: number;
 }) {
   if (ui.filterOpen) {
     return (
@@ -1840,18 +1884,31 @@ function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup,
       />
     );
   }
+  const modeUndoControls = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+      <div className="usa-mode-toggle usa-mode-toggle-sm">
+        <button className={mode === "add" ? "active" : ""} onClick={() => setMode("add")}>＋1</button>
+        <button className={mode === "sub" ? "active" : ""} onClick={() => setMode("sub")}>－1</button>
+      </div>
+      <button className="usa-tool-btn" disabled={undoCount === 0} onClick={undo} title="直近の操作を1つずつ元に戻します（最大10件）">
+        元に戻す{undoCount > 0 ? ` (${undoCount})` : ""}
+      </button>
+    </div>
+  );
   if (match.activeFilterNames && match.activeFilterNames.length) {
     return (
       <div className="usa-filter-bar">
         <span className="num">🔍 出場 {match.activeFilterNames.length}人を表示中</span>
         <button className="usa-btn ghost" onClick={() => openFilterPanel(match, patchUi)}>変更</button>
         <button className="usa-btn ghost" onClick={clearFilter}>解除</button>
+        {modeUndoControls}
       </div>
     );
   }
   return (
     <div className="usa-filter-bar">
       <button className="usa-btn ghost" onClick={() => openFilterPanel(match, patchUi)}>🔍 出場メンバーを絞り込む</button>
+      {modeUndoControls}
     </div>
   );
 }
@@ -2195,6 +2252,7 @@ const CSS = `
 .usa-collapse-btn { background:rgba(255,255,255,0.12); border:none; color:#F4F2E9; font-size:11px; padding:5px 9px; border-radius:8px; cursor:pointer; font-weight:700; }
 .usa-hdr-summary { padding:2px 16px 12px; font-size:13px; color:#F4F2E9; display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; }
 .usa-tabs { display:flex; gap:8px; overflow-x:auto; padding:4px 12px; }
+.usa-global-nav { display:flex; gap:8px; padding:6px 12px 2px; border-bottom:1px solid rgba(255,255,255,0.12); }
 .usa-tab { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:7px 12px; border-radius:999px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.16); color:#EFEDE3; font-size:13px; cursor:pointer; }
 .usa-tab.active { background:var(--usa-disc); color:var(--usa-disc-ink); border-color:var(--usa-disc); font-weight:700; }
 .usa-tab .x { opacity:0.7; padding:2px; }
@@ -2266,6 +2324,8 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 .usa-btn.danger { background:var(--usa-miss); color:#fff; }
 .usa-add-cta { flex:1; margin:0; padding:14px; text-align:center; background:transparent; border:1.5px dashed var(--usa-line); border-radius:14px; color:var(--usa-ink-soft); font-size:13px; font-weight:600; cursor:pointer; }
 .usa-action-row { display:flex; gap:8px; margin:12px 16px 0; }
+.usa-bottom-actions { display:flex; gap:8px; margin:16px 16px calc(24px + env(safe-area-inset-bottom)); }
+.usa-bottom-actions .usa-tool-btn { flex: 1; }
 .usa-roster-row { display:flex; align-items:center; gap:8px; padding:8px 2px; border-bottom:1px solid var(--usa-line); font-size:13px; }
 .usa-roster-row input[type="text"], .usa-roster-row input:not([type="checkbox"]) { flex:1; min-width:0; padding:7px 9px; border-radius:8px; border:1px solid var(--usa-line); background:var(--usa-chalk); color:var(--usa-ink); font-size:13px; }
 .usa-roster-row input.num-mini { flex:0 0 52px; }
@@ -2284,6 +2344,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 @keyframes usa-spin { to { transform: rotate(360deg); } }
 .usa-toolbar { position:sticky; bottom:0; z-index:20; display:flex; align-items:center; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:var(--usa-card); border-top:1px solid var(--usa-line); box-shadow:0 -2px 10px var(--usa-shadow); }
 .usa-mode-toggle { display:flex; border-radius:10px; overflow:hidden; border:1px solid var(--usa-line); }
+.usa-mode-toggle-sm button { padding:6px 10px !important; font-size:12px !important; }
 .usa-mode-toggle button { border:none; padding:10px 14px; font-size:13px; font-weight:700; background:var(--usa-chalk); color:var(--usa-ink-soft); cursor:pointer; }
 .usa-mode-toggle button.active { background:var(--usa-disc); color:var(--usa-disc-ink); }
 .usa-tool-btn { border:none; border-radius:10px; padding:10px 12px; font-size:13px; font-weight:700; background:var(--usa-chalk); color:var(--usa-ink-soft); cursor:pointer; }
@@ -2299,7 +2360,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 .usa-help-title { font-size:13px; font-weight:800; color:var(--usa-ink); margin-bottom:4px; }
 .usa-help-section p { margin:0 0 8px; font-size:13px; line-height:1.7; color:var(--usa-ink-soft); }
 @media print {
-  .usa-hdr, .usa-toolbar, .usa-action-row, .usa-panel, .usa-trash-btn, .usa-toast-root, .usa-filter-bar, .usa-modal-backdrop { display:none !important; }
+  .usa-hdr, .usa-toolbar, .usa-action-row, .usa-bottom-actions, .usa-panel, .usa-trash-btn, .usa-toast-root, .usa-filter-bar, .usa-modal-backdrop { display:none !important; }
   .usa-print-title { display:block; margin:0 0 14px; padding:0 4px; }
   .usa-print-title .t1 { font-size:17px; font-weight:800; color:#16211C; }
   .usa-print-title .t2 { font-size:11px; color:#647065; margin-top:2px; }
