@@ -1,32 +1,30 @@
 #!/bin/bash
 set -e
 
-# 1. GitHubから最新の zip を取得 (pull)
 echo "📥 GitHubから最新状態を取得中..."
-git pull origin main
+git pull origin main || true
 
-# 2. zip ファイルが存在するか確認して解凍
 ZIP_FILE="ultimate-stats-app.zip"
 
 if [ -f "$ZIP_FILE" ]; then
     echo "📦 $ZIP_FILE を解凍中..."
     unzip -o "$ZIP_FILE" -d ./
-    
-    # Gitの追跡からzip自体の変更を取り除く（展開されたコードのみをコミットするため）
     git rm "$ZIP_FILE" || rm -f "$ZIP_FILE"
-else
-    echo "⚠️ $ZIP_FILE が見つかりませんでした。"
-    exit 1
 fi
 
-# 3. 依存パッケージの更新
-echo "📥 パッケージチェック中..."
+echo "📥 パッケージを準備中..."
 npm install
+npm install --save-dev gh-pages
 
-# 4. 解凍したコードを GitHub へ反映
-echo "🚀 変更をGitHubへ反映中..."
+echo "🛠️ アプリをビルド中..."
+npm run build
+
+echo "🚀 ソースコードをGitHubへ保存中..."
 git add .
-git commit -m "Auto extracted from uploaded zip: $(date '+%Y-%m-%d %H:%M:%S')" || true
+git commit -m "Fix build and deploy: $(date '+%Y-%m-%d %H:%M:%S')" || true
 git push origin main
 
-echo "✅ すべての処理が完了しました！"
+echo "🌐 GitHub Pagesへ公開中..."
+npx gh-pages -d dist
+
+echo "✅ デプロイが完了しました！"
