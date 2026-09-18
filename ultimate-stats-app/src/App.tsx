@@ -139,6 +139,7 @@ const ALL_ID = "__ALL__";
 const ROSTER_ID = "__ROSTER__";
 const SETTINGS_ID = "__SETTINGS__";
 const DEFAULT_PITCH = "#1B4332";
+const APP_VERSION = "1.0";
 
 function defaultAwards(): TournamentAward[] {
   return ["MVP", "敢闘賞", "アシスト王", "得点王", "スコアリーダー"].map((name) => ({ id: uid(), name, playerName: "" }));
@@ -1109,7 +1110,7 @@ export default function App() {
       <div className="usa-app">
         <header className="usa-hdr" ref={headerRef}>
           <div className="usa-hdr-top">
-            <span className="usa-brand">🥏 アルティメット スタッツ</span>
+            <span className="usa-brand">🥏 アルティメット スタッツ<span className="usa-version-badge">v{APP_VERSION}</span></span>
             <div className="usa-hdr-top-right">
               <span className={"usa-save-status" + (saveError ? " err" : lastSavedAt ? " ok" : "")}>
                 {saveError ? "⚠️ 自動保存できません" : lastSavedAt ? `● 自動保存 ${pad2(new Date(lastSavedAt).getHours())}:${pad2(new Date(lastSavedAt).getMinutes())}` : "自動保存 待機中"}
@@ -2187,6 +2188,7 @@ const CSS = `
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:8px; }
 .usa-brand { font-weight:700; font-size:16px; }
+.usa-version-badge { font-size:10px; font-weight:600; color:rgba(244,242,233,0.65); margin-left:6px; vertical-align:middle; }
 .usa-save-status { font-size:10px; color:rgba(244,242,233,0.65); white-space:nowrap; }
 .usa-save-status.ok { color:#BFE6CE; }
 .usa-save-status.err { color:#F3C6B8; font-weight:700; }
