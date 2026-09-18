@@ -13,7 +13,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
  *
  * 含まれる機能:
  *   - 大会 > 試合 > 選手 の階層管理、大会全体の集計
- *   - タッチ数・スローミス・キャッチミス・ブロック・ゴール・アシストのタップ入力、元に戻す
+ *   - タッチ数・スローミス・キャッチミス・ブロック・アシスト・ゴールのタップ入力、元に戻す
  *   - 背番号順 / 登録順 ソート切り替え、NO・選手列の分割表示
  *   - 出場メンバーの絞り込み、絞り込み条件を「グループ」として大会単位で保存・再利用
  *   - 他の試合から選手をコピー
@@ -141,7 +141,7 @@ const DEFAULT_PITCH = "#1B4332";
 const APP_VERSION = "1.1";
 
 function defaultAwards(): TournamentAward[] {
-  return ["MVP", "敢闘賞", "アシスト王", "得点王", "スコアリーダー"].map((name) => ({ id: uid(), name, playerName: "" }));
+  return [];
 }
 
 // 16進カラーをpercentぶん黒(negative)/白(positive)側に寄せる（ヘッダー用の濃色バリエーション生成に使用）
@@ -176,8 +176,8 @@ const FIELDS: { key: StatKey; label: string; kind: "neutral" | "miss" | "good" }
   { key: "throwMiss", label: "スローミス", kind: "miss" },
   { key: "catchMiss", label: "キャッチミス", kind: "miss" },
   { key: "block", label: "ブロック", kind: "good" },
-  { key: "goal", label: "ゴール", kind: "good" },
   { key: "assist", label: "アシスト", kind: "good" },
+  { key: "goal", label: "ゴール", kind: "good" },
 ];
 
 // ---------------- Helpers ----------------
@@ -438,25 +438,75 @@ function filterAggRows(rows: AggRow[], filters: Record<string, string>, roster: 
   return rows.filter((r) => active.every(([colId, val]) => joinRosterValue(roster, colId, r.name) === val));
 }
 
+interface AutoAward {
+  label: string;
+  value: number;
+  winners: string[];
+}
+
+// 得点王・アシスト王・スコアリーダー（ゴール+アシスト）・ブロック王を集計結果から自動計算。同率1位は全員を挙げる。
+function computeAutoAwards(aggRows: AggRow[]): AutoAward[] {
+  const categories: { label: string; getValue: (r: AggRow) => number }[] = [
+    { label: "得点王", getValue: (r) => r.goal || 0 },
+    { label: "アシスト王", getValue: (r) => r.assist || 0 },
+    { label: "スコアリーダー", getValue: (r) => (r.goal || 0) + (r.assist || 0) },
+    { label: "ブロック王", getValue: (r) => r.block || 0 },
+  ];
+  return categories.map(({ label, getValue }) => {
+    if (!aggRows.length) return { label, value: 0, winners: [] };
+    const maxVal = Math.max(...aggRows.map(getValue));
+    const winners = maxVal > 0 ? aggRows.filter((r) => getValue(r) === maxVal).map((r) => r.name) : [];
+    return { label, value: maxVal, winners };
+  });
+}
+
+interface MomEntry {
+  matchName: string;
+  playerName: string;
+}
+
+function computeMomEntries(t: TournamentData): MomEntry[] {
+  const entries: MomEntry[] = [];
+  t.matches.forEach((m) => {
+    const p = m.players.find((x) => x.mom);
+    if (p) entries.push({ matchName: m.name, playerName: p.name });
+  });
+  return entries;
+}
+
 function buildCSV(match: MatchData, sortMode: "reg" | "number"): string {
-  const headers = ["背番号", "名前", "タッチ数", "スローミス", "キャッチミス", "ブロック", "ゴール", "アシスト", "パス成功率"];
+  const headers = ["背番号", "名前", "タッチ数", "スローミス", "キャッチミス", "ブロック", "アシスト", "ゴール", "パス成功率"];
   const players = sortPlayers(match.players, sortMode);
   const rows = players.map((p) => [
     p.number || "", p.name || "", p.touch || 0, p.throwMiss || 0, p.catchMiss || 0,
-    p.block || 0, p.goal || 0, p.assist || 0, fmtRate(passRate(p)),
+    p.block || 0, p.assist || 0, p.goal || 0, fmtRate(passRate(p)),
   ]);
   const lines = [headers, ...rows].map((r) => r.map(csvEscape).join(","));
   return "\uFEFF" + lines.join("\r\n");
 }
 
 function buildCSVAll(rows: AggRow[]): string {
-  const headers = ["背番号", "名前", "試合数", "タッチ数", "スローミス", "キャッチミス", "ブロック", "ゴール", "アシスト", "パス成功率"];
+  const headers = ["背番号", "名前", "試合数", "タッチ数", "スローミス", "キャッチミス", "ブロック", "アシスト", "ゴール", "パス成功率"];
   const body = rows.map((p) => [
     p.number || "", p.name || "", p.games || 0, p.touch || 0, p.throwMiss || 0, p.catchMiss || 0,
-    p.block || 0, p.goal || 0, p.assist || 0, fmtRate(passRate(p)),
+    p.block || 0, p.assist || 0, p.goal || 0, fmtRate(passRate(p)),
   ]);
   const lines = [headers, ...body].map((r) => r.map(csvEscape).join(","));
   return "\uFEFF" + lines.join("\r\n");
+}
+
+function buildAwardsCSVSection(t: TournamentData, aggRows: AggRow[]): string {
+  const lines: string[][] = [[], ["個人賞", "受賞者"]];
+  computeAutoAwards(aggRows).forEach((a) => {
+    lines.push([a.label, a.winners.length ? a.winners.join("、") : "該当者なし"]);
+  });
+  computeMomEntries(t).forEach((e) => {
+    lines.push([`MOM（${e.matchName}）`, e.playerName]);
+  });
+  t.awards.forEach((a) => {
+    lines.push([a.name, a.playerName || "未選出"]);
+  });
+  return lines.map((r) => r.map(csvEscape).join(",")).join("\r\n");
 }
 
 // ---------------- Main component ----------------
@@ -1041,7 +1091,7 @@ export default function App() {
 
   // ---- full data backup (全大会・全試合一括CSV) ----
   const exportAllDataCSV = () => {
-    const headers = ["大会名", "試合名", "背番号", "名前", "タッチ数", "スローミス", "キャッチミス", "ブロック", "ゴール", "アシスト", "パス成功率", "MOM"];
+    const headers = ["大会名", "試合名", "背番号", "名前", "タッチ数", "スローミス", "キャッチミス", "ブロック", "アシスト", "ゴール", "パス成功率", "MOM"];
     const rows: string[][] = [];
     state.tournaments.forEach((tt) => {
       tt.matches.forEach((mm) => {
@@ -1049,7 +1099,7 @@ export default function App() {
           rows.push([
             tt.name, mm.name, p.number || "", p.name || "",
             String(p.touch || 0), String(p.throwMiss || 0), String(p.catchMiss || 0),
-            String(p.block || 0), String(p.goal || 0), String(p.assist || 0),
+            String(p.block || 0), String(p.assist || 0), String(p.goal || 0),
             fmtRate(passRate(p)), p.mom ? "○" : "",
           ]);
         });
@@ -1120,7 +1170,8 @@ export default function App() {
     if (isAllView) {
       const rows = aggregateTournament(t, state.sortMode);
       if (!rows.length) { showToast("まだ記録がありません"); return; }
-      downloadTextFile(buildCSVAll(rows), `${sanitizeFilename(t.name)}_大会集計.csv`, "text/csv;charset=utf-8;");
+      const csv = buildCSVAll(rows) + "\r\n" + buildAwardsCSVSection(t, rows);
+      downloadTextFile(csv, `${sanitizeFilename(t.name)}_大会集計.csv`, "text/csv;charset=utf-8;");
     } else if (match) {
       if (!match.players.length) { showToast("選手を追加してから書き出してください"); return; }
       downloadTextFile(buildCSV(match, state.sortMode), `${sanitizeFilename(match.name)}.csv`, "text/csv;charset=utf-8;");
@@ -1242,16 +1293,12 @@ export default function App() {
 
                   <div className="usa-hdr-bottom">
                     {isAllView ? (
-                      <>
-                        <div className="usa-match-title"><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計 · {aggRows.length}人 · 全{t.matches.length}試合</div>
-                        <SortButton sortMode={state.sortMode} onClick={toggleSort} />
-                      </>
+                      <div className="usa-match-title"><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計 · {aggRows.length}人 · 全{t.matches.length}試合</div>
                     ) : ui.renamingMatch ? (
                       <RenameForm value={match!.name} onConfirm={renameMatch} onCancel={() => patchUi({ renamingMatch: false })} />
                     ) : (
                       <>
                         <div className="usa-match-title">{match!.name} · {match!.players.length}人</div>
-                        <SortButton sortMode={state.sortMode} onClick={toggleSort} />
                         <button className="usa-icon-btn" title="試合名を編集" onClick={() => patchUi({ renamingMatch: true })}>✎</button>
                       </>
                     )}
@@ -1284,9 +1331,10 @@ export default function App() {
             />
           ) : isAllView ? (
             <AggregateView
-              aggRows={aggRows} roster={state.roster} awards={t.awards} ui={ui} patchUi={patchUi}
+              aggRows={aggRows} roster={state.roster} awards={t.awards} t={t} ui={ui} patchUi={patchUi}
               setAwardWinner={setAwardWinner} addAward={addAward} renameAward={renameAward} deleteAward={deleteAward}
               exportCSV={exportCSV} printPage={printPage}
+              sortMode={state.sortMode} toggleSortMode={toggleSort}
             />
           ) : match!.players.length === 0 ? (
             <>
@@ -1308,6 +1356,7 @@ export default function App() {
                   saveGroup={saveGroup} updateGroup={updateGroup} deleteGroup={deleteGroup}
                   showToast={showToast}
                   mode={state.mode} setMode={setMode} undo={undo} undoCount={undoStack.length}
+                  sortMode={state.sortMode} toggleSort={toggleSort}
                 />
               )}
               {players.length === 0 ? (
@@ -1412,11 +1461,12 @@ function RenameForm({ value, onConfirm, onCancel }: { value: string; onConfirm: 
 
 // ---- aggregate (大会全体の集計) view ----
 
-function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, addAward, renameAward, deleteAward, exportCSV, printPage }: {
-  aggRows: AggRow[]; roster: RosterData; awards: TournamentAward[]; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
+function AggregateView({ aggRows, roster, awards, t, ui, patchUi, setAwardWinner, addAward, renameAward, deleteAward, exportCSV, printPage, sortMode, toggleSortMode }: {
+  aggRows: AggRow[]; roster: RosterData; awards: TournamentAward[]; t: TournamentData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   setAwardWinner: (awardId: string, playerName: string) => void;
   addAward: (name: string) => void; renameAward: (awardId: string, name: string) => void; deleteAward: (awardId: string) => void;
   exportCSV: () => void; printPage: () => void;
+  sortMode: "reg" | "number"; toggleSortMode: () => void;
 }) {
   if (aggRows.length === 0) {
     return (
@@ -1453,10 +1503,16 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
   const sortArrow = (key: string) => (ui.aggSortKey === key ? (ui.aggSortDir === "asc" ? " ▲" : " ▼") : "");
 
   const filteredRows = filterAggRows(aggRows, ui.aggColumnFilters, roster);
+  const autoAwards = computeAutoAwards(aggRows);
+  const momEntries = computeMomEntries(t);
   const rows = sortAggRows(filteredRows, ui.aggSortKey, ui.aggSortDir, roster);
 
   return (
     <>
+      <div className="usa-filter-bar">
+        <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>選手の並び順:</span>
+        <SortButton sortMode={sortMode} onClick={toggleSortMode} />
+      </div>
       {extraCols.length > 0 ? (
         <div className="usa-filter-bar">
           <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>名簿の列を表示:</span>
@@ -1536,9 +1592,23 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
           </table>
         </div>
       )}
-      <div className="usa-panel">
+      <div className="usa-panel usa-print-visible">
         <div className="usa-panel-title">🏅 個人賞</div>
         <div className="usa-award-list">
+          {autoAwards.map((a) => (
+            <div key={a.label} className="usa-roster-row">
+              <span style={{ minWidth: 100, fontWeight: 700 }}>{a.label}</span>
+              <span style={{ flex: 1, fontSize: 13 }}>
+                {a.winners.length === 0 ? <span style={{ color: "var(--usa-ink-soft)" }}>該当者なし</span> : `${a.winners.join("、")}（${a.value}）`}
+              </span>
+            </div>
+          ))}
+          {momEntries.map((e, i) => (
+            <div key={i} className="usa-roster-row">
+              <span style={{ minWidth: 100, fontWeight: 700 }}>MOM（{e.matchName}）</span>
+              <span style={{ flex: 1, fontSize: 13 }}>{e.playerName}</span>
+            </div>
+          ))}
           {awards.map((a) => (
             <AwardRow key={a.id} award={a} aggRows={aggRows} onSetWinner={setAwardWinner} onRename={renameAward} onDelete={deleteAward} />
           ))}
@@ -1548,7 +1618,7 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
         ) : (
           <button className="usa-tool-btn" style={{ padding: "6px 10px", fontSize: 12, marginTop: 6 }} onClick={() => patchUi({ addingAward: true })}>＋ 賞を追加</button>
         )}
-        <div className="usa-panel-hint" style={{ marginTop: 8, marginBottom: 0 }}>1人が複数の賞を受賞してもかまいません。</div>
+        <div className="usa-panel-hint" style={{ marginTop: 8, marginBottom: 0 }}>得点王・アシスト王・スコアリーダー・ブロック王は集計結果から自動計算されます（同率1位は全員表示）。マンオブザマッチは各試合の☆で設定した選手です。追加した賞は自由に受賞者を選べます。</div>
       </div>
       <div className="usa-empty" style={{ textAlign: "left", fontSize: 12, marginTop: 12 }}>
         選手は名前で名寄せして合計しています。同じ選手は各試合で同じ名前で登録してください。列見出しをタップすると、その項目で並び替えできます。
@@ -1563,7 +1633,10 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
 
 // ---- settings (⚙️ 設定) view ----
 
-const PRESET_COLORS = ["#1B4332", "#0B4F6C", "#7A1F2B", "#3D2C8D", "#B5541B", "#1B1B1B", "#2D6A4F", "#B08D00"];
+const PRESET_COLORS = [
+  "#1B4332", "#0B4F6C", "#7A1F2B", "#3D2C8D", "#B5541B", "#1B1B1B", "#2D6A4F", "#B08D00",
+  "#0D3B66", "#6A040F", "#5A189A", "#014F86", "#9D0208", "#283618", "#4A4E69", "#6D4C41",
+];
 
 function SettingsView({ state, ui, patchUi, setThemeColor, exportRosterCSV, importRosterCSV, exportAllDataCSV, importAllDataCSV }: {
   state: AppState; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
@@ -1769,6 +1842,7 @@ function AwardRow({ award, aggRows, onSetWinner, onRename, onDelete }: {
         <option value="">未選出</option>
         {aggRows.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
       </select>
+      <span className="usa-print-only-text" style={{ flex: 1, fontSize: 13 }}>{award.playerName || "未選出"}</span>
       <button className="usa-trash-btn" title="この賞を削除" onClick={() => onDelete(award.id)}>🗑</button>
     </div>
   );
@@ -1860,7 +1934,7 @@ function EditRow({ p, onSave, onCancel }: { p: Player; onSave: (id: string, name
 
 // ---- lineup filter / saved groups ----
 
-function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup, updateGroup, deleteGroup, showToast, mode, setMode, undo, undoCount }: {
+function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup, updateGroup, deleteGroup, showToast, mode, setMode, undo, undoCount, sortMode, toggleSort }: {
   match: MatchData; t: TournamentData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   applyFilter: (names: string[]) => void; clearFilter: () => void;
   saveGroup: (name: string, memberNames: string[]) => void;
@@ -1868,6 +1942,7 @@ function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup,
   deleteGroup: (groupId: string) => void;
   showToast: (msg: string) => void;
   mode: "add" | "sub"; setMode: (mode: "add" | "sub") => void; undo: () => void; undoCount: number;
+  sortMode: "reg" | "number"; toggleSort: () => void;
 }) {
   if (ui.filterOpen) {
     return (
@@ -1880,6 +1955,7 @@ function FilterBar({ match, t, ui, patchUi, applyFilter, clearFilter, saveGroup,
   }
   const modeUndoControls = (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+      <SortButton sortMode={sortMode} onClick={toggleSort} />
       <div className="usa-mode-toggle usa-mode-toggle-sm">
         <button className={mode === "add" ? "active" : ""} onClick={() => setMode("add")}>＋1</button>
         <button className={mode === "sub" ? "active" : ""} onClick={() => setMode("sub")}>－1</button>
@@ -2187,7 +2263,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
         <div className="usa-help-section">
           <div className="usa-help-title">✏️ スタッツの入力</div>
-          <p>選手を試合に追加すると、タッチ数・スローミス・キャッチミス・ブロック・ゴール・アシストの数字をタップするだけでカウントアップされます。フッターの「＋1」「－1」を切り替えると、タップで減算もできます。「元に戻す」で直近の操作を最大10件まで1つずつ取り消せます。</p>
+          <p>選手を試合に追加すると、タッチ数・スローミス・キャッチミス・ブロック・アシスト・ゴールの数字をタップするだけでカウントアップされます。フッターの「＋1」「－1」を切り替えると、タップで減算もできます。「元に戻す」で直近の操作を最大10件まで1つずつ取り消せます。</p>
           <p>選手名の横の☆をタップすると、その試合の「マンオブザマッチ（MOM）」を1人だけ設定できます。</p>
         </div>
 
@@ -2198,7 +2274,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
         <div className="usa-help-section">
           <div className="usa-help-title">📊 大会全体の集計</div>
-          <p>大会内の全試合の合計スタッツを確認できます。列見出しをタップするとその項目で並び替え、「名簿の列を表示」で選手名簿の追加情報（学年など）を表示・絞り込みできます。「🏅 個人賞」でMVPなどの受賞者を選手名から選んで設定できます（1人が複数の賞を受賞してもかまいません）。</p>
+          <p>大会内の全試合の合計スタッツを確認できます。列見出しをタップするとその項目で並び替え、「名簿の列を表示」で選手名簿の追加情報（学年など）を表示・絞り込みできます。「🏅 個人賞」には得点王・アシスト王・スコアリーダー・ブロック王が集計結果から自動的に表示されます（同率1位は全員表示）。各試合のマンオブザマッチもここに表示され、自由に賞を追加することもできます。</p>
         </div>
 
         <div className="usa-help-section">
@@ -2292,6 +2368,7 @@ const CSS = `
 .usa-mom-badge { display:inline-block; margin-left:6px; font-size:9px; font-weight:800; color:#C9820E; background:#FBEED9; border-radius:5px; padding:1px 5px; vertical-align:middle; }
 tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC; }
 .usa-award-list { display:flex; flex-direction:column; gap:4px; margin-bottom: 6px; }
+.usa-print-only-text { display:none; }
 .usa-stats td.cell { padding:0; text-align:center; }
 .usa-cell-btn { width:100%; min-width:56px; height:52px; border:none; background:transparent; color:var(--usa-ink); font-size:18px; font-weight:600; cursor:pointer; }
 .usa-stats td.cell.miss { background:var(--usa-miss-bg); }
@@ -2355,6 +2432,9 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 .usa-help-section p { margin:0 0 8px; font-size:13px; line-height:1.7; color:var(--usa-ink-soft); }
 @media print {
   .usa-hdr, .usa-toolbar, .usa-action-row, .usa-bottom-actions, .usa-panel, .usa-trash-btn, .usa-toast-root, .usa-filter-bar, .usa-modal-backdrop { display:none !important; }
+  .usa-panel.usa-print-visible { display:block !important; border:none; padding:0; margin:16px 16px 0; }
+  .usa-panel.usa-print-visible .usa-tool-btn, .usa-panel.usa-print-visible select, .usa-panel.usa-print-visible .usa-trash-btn { display:none !important; }
+  .usa-panel.usa-print-visible .usa-print-only-text { display:inline !important; }
   .usa-print-title { display:block; margin:0 0 14px; padding:0 4px; }
   .usa-print-title .t1 { font-size:17px; font-weight:800; color:#16211C; }
   .usa-print-title .t2 { font-size:11px; color:#647065; margin-top:2px; }
