@@ -17,19 +17,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
  *   - 背番号順 / 登録順 ソート切り替え、NO・選手列の分割表示
  *   - 出場メンバーの絞り込み、絞り込み条件を「グループ」として大会単位で保存・再利用
  *   - 他の試合から選手をコピー
- *   - 写真から選手登録（AI） ※下記の注意を参照
  *   - CSV書き出し（ブラウザの標準ダウンロード）／ PDF書き出し（印刷ダイアログ）
- *
- * 注意（「写真から選手登録」機能について）:
- *   この機能は Claude.ai 上で「アーティファクト」として公開されている場合にのみ
- *   実際に動きます（ページ内から window.claude.use("sample") という、Claudeの
- *   アーティファクト実行環境だけに存在する仕組みを呼び出しているためです）。
- *   このファイルをご自身のプロジェクトでビルド・デプロイして単独のWebアプリとして
- *   動かす場合、window.claude は存在しないため、この機能はボタンを押すと
- *   「この環境ではAI機能を利用できません」と表示されるだけで、実際には動作しません。
- *   コード自体は削除せず残しているので、window.claude の呼び出し部分を、
- *   ご自身で用意した画像認識API（OpenAIのVision APIなど）の呼び出しに
- *   置き換えれば、そのまま同じUIで動かせます（該当箇所は runPhotoScan 関数）。
  */
 
 // ---------------- Types ----------------
@@ -106,13 +94,6 @@ interface AppState {
   themeColor?: string;
 }
 
-interface PhotoResultRow {
-  id: string;
-  name: string;
-  number: string;
-  selected: boolean;
-}
-
 interface LastAction {
   matchId: string;
   playerId: string;
@@ -133,10 +114,6 @@ interface UIState {
   copyOpen: boolean;
   copySourceKey: string | null;
   copySelected: Record<string, boolean>;
-  photoOpen: boolean;
-  photoLoading: boolean;
-  photoResults: PhotoResultRow[] | null;
-  photoFile: File | null;
   filterOpen: boolean;
   filterDraft: Record<string, boolean>;
   filterLoadedGroupId: string | null;
@@ -150,15 +127,9 @@ interface UIState {
   addingAward: boolean;
   helpOpen: boolean;
   rosterCsvFile: File | null;
+  rosterPickOpen: boolean;
+  rosterPickSelected: Record<string, boolean>;
   fullCsvFile: File | null;
-}
-
-declare global {
-  interface Window {
-    claude?: {
-      use: (name: string) => Promise<any>;
-    };
-  }
 }
 
 // ---------------- Constants ----------------
@@ -168,6 +139,7 @@ const ALL_ID = "__ALL__";
 const ROSTER_ID = "__ROSTER__";
 const SETTINGS_ID = "__SETTINGS__";
 const DEFAULT_PITCH = "#1B4332";
+const APP_VERSION = "1.0";
 
 function defaultAwards(): TournamentAward[] {
   return ["MVP", "敢闘賞", "アシスト王", "得点王", "スコアリーダー"].map((name) => ({ id: uid(), name, playerName: "" }));
@@ -332,6 +304,13 @@ function truthyFlag(v: string): boolean {
   return s === "○" || s === "TRUE" || s === "true" || s === "1" || s === "はい" || s === "済";
 }
 
+// 先頭セルが空欄または数値なら「ヘッダー無し（もうデータ行）」、それ以外の文字列ならヘッダー行とみなす
+function isLikelyHeaderCell(v: string): boolean {
+  const s = (v || "").trim();
+  if (s === "") return false;
+  return isNaN(Number(s));
+}
+
 function sanitizeFilename(name: string): string {
   return (name || "アルティメット").replace(/[\/\\:*?"<>|]/g, "-").slice(0, 80);
 }
@@ -443,31 +422,6 @@ function buildCSVAll(rows: AggRow[]): string {
   return "\uFEFF" + lines.join("\r\n");
 }
 
-function photoErrorMessage(code?: string): string {
-  switch (code) {
-    case "not_granted":
-    case "sampling_disabled":
-    case "not_declared":
-    case "capability_disabled":
-    case "capability_removed":
-      return "この環境ではAI機能を利用できません";
-    case "images_unavailable":
-      return "この環境では写真を送信できません";
-    case "image_rejected":
-      return "画像を読み取れませんでした。別の写真でお試しください";
-    case "rate_limited":
-      return "混み合っています。しばらくしてからもう一度お試しください";
-    case "invalid_json":
-      return "読み取り結果をうまく解析できませんでした。もう一度お試しください";
-    case "refused":
-      return "この画像は処理できませんでした";
-    case "cancelled":
-      return "キャンセルしました";
-    default:
-      return "エラーが発生しました。もう一度お試しください";
-  }
-}
-
 // ---------------- Main component ----------------
 
 export default function App() {
@@ -493,10 +447,6 @@ export default function App() {
     copyOpen: false,
     copySourceKey: null,
     copySelected: {},
-    photoOpen: false,
-    photoLoading: false,
-    photoResults: null,
-    photoFile: null,
     filterOpen: false,
     filterDraft: {},
     filterLoadedGroupId: null,
@@ -511,6 +461,8 @@ export default function App() {
     helpOpen: false,
     rosterCsvFile: null,
     fullCsvFile: null,
+    rosterPickOpen: false,
+    rosterPickSelected: {},
   });
   const patchUi = (patch: Partial<UIState>) => setUi((u) => ({ ...u, ...patch }));
 
@@ -664,7 +616,8 @@ export default function App() {
     patchUi({
       addingRosterColumn: false,
       addPlayerOpen: false, renamingMatch: false, editingPlayerId: null, confirmDeletePlayer: null,
-      copyOpen: false, copySourceKey: null, copySelected: {}, photoOpen: false, photoResults: null,
+      copyOpen: false, copySourceKey: null, copySelected: {},
+      rosterPickOpen: false, rosterPickSelected: {},
       filterOpen: false, filterDraft: {}, filterLoadedGroupId: null, savingGroupNameOpen: false, confirmDeleteGroup: null,
     });
   };
@@ -719,7 +672,8 @@ export default function App() {
       addingRosterColumn: false,
       addPlayerOpen: false, renamingMatch: false, renamingTournament: false, editingPlayerId: null,
       confirmDeletePlayer: null, confirmDeleteMatch: null, copyOpen: false, copySourceKey: null, copySelected: {},
-      photoOpen: false, photoResults: null, newMatchOpen: false,
+      rosterPickOpen: false, rosterPickSelected: {},
+      newMatchOpen: false,
       filterOpen: false, filterDraft: {}, filterLoadedGroupId: null, savingGroupNameOpen: false, confirmDeleteGroup: null,
     });
   };
@@ -767,6 +721,26 @@ export default function App() {
     });
     patchUi({ copyOpen: false, copySourceKey: null, copySelected: {} });
     showToast(added > 0 ? `${added}人コピーしました` : "追加できる選手がありませんでした（同名の選手は既に登録済みです）");
+  };
+
+  // 選手名簿から出場選手を選んで試合に追加する
+  const addPlayersFromRoster = (selected: Record<string, boolean>) => {
+    let added = 0;
+    updateState((s) => {
+      const { tt, mm } = withActive(s);
+      const existingNames = mm.players.map((p) => p.name.trim());
+      tt.roster.rows.forEach((r) => {
+        if (!selected[r.id]) return;
+        const name = (r.values["name"] || "").trim();
+        if (!name) return;
+        if (existingNames.includes(name)) return;
+        mm.players.push({ id: uid(), name, number: (r.values["number"] || "").trim(), ...blankPlayerStats() });
+        existingNames.push(name);
+        added++;
+      });
+    });
+    patchUi({ rosterPickOpen: false, rosterPickSelected: {} });
+    showToast(added > 0 ? `${added}人追加しました` : "追加できる選手がありませんでした（同名の選手は既に登録済みです、または名前が未入力です）");
   };
 
   // ---- groups (saved lineups) ----
@@ -859,45 +833,62 @@ export default function App() {
     showToast("CSVを保存しました");
   };
 
-  // 名簿CSVの取り込み：1列目→背番号、2列目→名前（ヘッダー文言は問わない）、
-  // 3列目以降はヘッダー名で既存の列と突き合わせ、なければ新しい列として追加する
+  // 名簿CSVの取り込み：1列目→背番号、2列目→名前（ヘッダー文言は問わない）。
+  // 先頭行がヘッダーらしければ、3列目以降はヘッダー名で既存の列と突き合わせ、なければ新しい列を作る。
+  // ヘッダーが無ければ、3列目以降は既存の列に順番どおり取り込む（足りなければ新しい列を作る）。
   const importRosterCSV = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const { headers, rows } = parseCSVWithHeader(String(reader.result || ""));
-      if (headers.length < 2 || !rows.length) { showToast("読み取れる行がありませんでした"); return; }
-      const extraHeaders = headers.slice(2).filter((h) => h);
+      const text = String(reader.result || "");
+      const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim().length > 0);
+      if (!lines.length) { showToast("読み取れる行がありませんでした"); return; }
+      const grid = lines.map(parseCSVLine);
+      const hasHeader = isLikelyHeaderCell(grid[0][0] || "");
+      const headerRow = hasHeader ? grid[0] : null;
+      const dataRows = hasHeader ? grid.slice(1) : grid;
       let added = 0, updated = 0;
       updateState((s) => {
         const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
         const colIdByName: Record<string, string> = {};
         tt.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
-        extraHeaders.forEach((h) => {
-          if (!colIdByName[h]) {
-            const newCol: RosterColumn = { id: uid(), name: h };
+        if (headerRow) {
+          headerRow.slice(2).forEach((h) => {
+            const name = (h || "").trim();
+            if (!name || colIdByName[name]) return;
+            const newCol: RosterColumn = { id: uid(), name };
             tt.roster.columns.push(newCol);
-            colIdByName[h] = newCol.id;
-          }
-        });
-        rows.forEach((row) => {
-          const values = Object.values(row);
-          const number = (values[0] || "").trim();
-          const name = (values[1] || "").trim();
+            colIdByName[name] = newCol.id;
+          });
+        }
+        dataRows.forEach((cells) => {
+          const number = (cells[0] || "").trim();
+          const name = (cells[1] || "").trim();
           if (!name) return;
           let target = tt.roster.rows.find((r) => (r.values["name"] || "").trim() === name);
-          if (!target) {
-            target = { id: uid(), values: {} };
-            tt.roster.rows.push(target);
-            added++;
-          } else {
-            updated++;
-          }
+          if (!target) { target = { id: uid(), values: {} }; tt.roster.rows.push(target); added++; }
+          else updated++;
           target.values["number"] = number;
           target.values["name"] = name;
-          extraHeaders.forEach((h) => {
-            const v = row[h];
-            if (v !== undefined) target!.values[colIdByName[h]] = v;
-          });
+          if (headerRow) {
+            headerRow.slice(2).forEach((h, i) => {
+              const hn = (h || "").trim();
+              if (!hn) return;
+              const v = cells[i + 2];
+              if (v !== undefined) target!.values[colIdByName[hn]] = v.trim();
+            });
+          } else {
+            const nonLocked = tt.roster.columns.filter((c) => !c.locked);
+            for (let i = 2; i < cells.length; i++) {
+              const posIndex = i - 2;
+              let col = nonLocked[posIndex];
+              if (!col) {
+                col = { id: uid(), name: `列${posIndex + 1}` };
+                tt.roster.columns.push(col);
+                nonLocked.push(col);
+              }
+              target!.values[col.id] = (cells[i] || "").trim();
+            }
+          }
         });
       });
       showToast(`${added}人追加、${updated}人更新しました`);
@@ -905,6 +896,55 @@ export default function App() {
     };
     reader.onerror = () => showToast("ファイルを読み込めませんでした");
     reader.readAsText(file, "utf-8");
+  };
+
+  // 表計算ソフトからのコピー＆ペースト（タブ区切り）を、貼り付け先のセルを起点に複数セルへ展開する
+  const pasteRosterGrid = (anchorRow: number, anchorCol: number, grid: string[][]) => {
+    if (!grid.length) return;
+    const topLeftHeader = anchorRow === 0 && anchorCol === 0 && isLikelyHeaderCell(grid[0][0] || "");
+    const headerRow = topLeftHeader ? grid[0] : null;
+    const dataGrid = topLeftHeader ? grid.slice(1) : grid;
+    updateState((s) => {
+      const tt = s.tournaments.find((x) => x.id === s.activeTournamentId) || s.tournaments[0];
+      const colIdByName: Record<string, string> = {};
+      tt.roster.columns.forEach((c) => { if (!c.locked) colIdByName[c.name] = c.id; });
+      if (headerRow) {
+        headerRow.slice(2).forEach((h) => {
+          const name = (h || "").trim();
+          if (!name || colIdByName[name]) return;
+          const newCol: RosterColumn = { id: uid(), name };
+          tt.roster.columns.push(newCol);
+          colIdByName[name] = newCol.id;
+        });
+      }
+      dataGrid.forEach((rowCells, r) => {
+        const targetRowIndex = anchorRow + r;
+        while (tt.roster.rows.length <= targetRowIndex) tt.roster.rows.push({ id: uid(), values: {} });
+        const targetRow = tt.roster.rows[targetRowIndex];
+        rowCells.forEach((cellVal, c) => {
+          const targetColIndex = anchorCol + c;
+          const v = (cellVal || "").trim();
+          if (targetColIndex === 0) { targetRow.values["number"] = v; return; }
+          if (targetColIndex === 1) { targetRow.values["name"] = v; return; }
+          if (headerRow) {
+            const hn = (headerRow[targetColIndex] || "").trim();
+            if (!hn) return;
+            const colId = colIdByName[hn];
+            if (colId) targetRow.values[colId] = v;
+          } else {
+            const nonLocked = tt.roster.columns.filter((c2) => !c2.locked);
+            const posIndex = targetColIndex - 2;
+            let col = nonLocked[posIndex];
+            if (!col) {
+              col = { id: uid(), name: `列${posIndex + 1}` };
+              tt.roster.columns.push(col);
+            }
+            targetRow.values[col.id] = v;
+          }
+        });
+      });
+    });
+    showToast("貼り付けました");
   };
 
   // ---- man of the match ----
@@ -1052,66 +1092,6 @@ export default function App() {
     window.print();
   };
 
-  // ---- AI photo import ----
-  // 注意: window.claude はClaude.aiのアーティファクト実行環境にのみ存在します。
-  // ご自身のプロジェクトで動かす場合は、この関数の中身を別の画像認識APIの
-  // 呼び出しに差し替えてください（返り値の形は { number: string, name: string }[] にすること）。
-  const runPhotoScan = () => {
-    if (!ui.photoFile) { showToast("写真を選んでください"); return; }
-    if (!window.claude || typeof window.claude.use !== "function") {
-      showToast("この環境ではAI機能を利用できません");
-      return;
-    }
-    patchUi({ photoLoading: true });
-    window.claude.use("sample").then((sample: any) => {
-      if (!sample) { patchUi({ photoLoading: false }); showToast("この環境ではAI機能を利用できません"); return; }
-      sample.limits().catch(() => null).then((limits: any) => {
-        if (!limits || !limits.images) { patchUi({ photoLoading: false }); showToast("この環境では写真を送信できません"); return; }
-        const prompt =
-          "この画像はアルティメット（フリスビー）チームの選手名簿です。写っている背番号と名前のペアを可能な限り読み取り、他の説明は一切付けずにJSON配列だけを返してください。" +
-          '形式: [{"number":"12","name":"れん"}, ...]。背番号が読み取れない選手はnumberを空文字""にしてください。名前は写真に書かれた表記のまま返してください。';
-        sample.json(prompt, { images: ui.photoFile, modelTier: "quick", cache: false }).then((data: any) => {
-          const arr = Array.isArray(data) ? data : [];
-          const rows: PhotoResultRow[] = arr
-            .map((item: any) => ({
-              id: uid(),
-              name: String((item && item.name) || "").trim(),
-              number: String((item && item.number) || "").trim(),
-              selected: true,
-            }))
-            .filter((r: PhotoResultRow) => r.name);
-          patchUi({ photoLoading: false });
-          if (!rows.length) { showToast("選手を読み取れませんでした。別の写真でお試しください"); return; }
-          patchUi({ photoResults: rows });
-        }).catch((err: any) => {
-          patchUi({ photoLoading: false });
-          showToast(photoErrorMessage(err && err.code));
-        });
-      });
-    }).catch(() => {
-      patchUi({ photoLoading: false });
-      showToast("この環境ではAI機能を利用できません");
-    });
-  };
-
-  const addPlayersFromPhotoResults = (selectedRows: PhotoResultRow[]) => {
-    let added = 0;
-    updateState((s) => {
-      const { mm } = withActive(s);
-      const existingNames = mm.players.map((p) => p.name.trim());
-      selectedRows.forEach((r) => {
-        const name = (r.name || "").trim();
-        if (!name) return;
-        if (existingNames.includes(name)) return;
-        mm.players.push({ id: uid(), name, number: (r.number || "").trim(), ...blankPlayerStats() });
-        existingNames.push(name);
-        added++;
-      });
-    });
-    patchUi({ photoOpen: false, photoResults: null, photoFile: null });
-    showToast(added > 0 ? `${added}人登録しました` : "登録できる選手がありませんでした（同名の選手は既に登録済みです）");
-  };
-
   // ---- render helpers ----
   const rawPlayers = match ? match.players : [];
   const filterActive = !!(match && match.activeFilterNames && match.activeFilterNames.length);
@@ -1130,7 +1110,7 @@ export default function App() {
       <div className="usa-app">
         <header className="usa-hdr" ref={headerRef}>
           <div className="usa-hdr-top">
-            <span className="usa-brand">🥏 アルティメット スタッツ</span>
+            <span className="usa-brand">🥏 アルティメット スタッツ<span className="usa-version-badge">v{APP_VERSION}</span></span>
             <div className="usa-hdr-top-right">
               <span className={"usa-save-status" + (saveError ? " err" : lastSavedAt ? " ok" : "")}>
                 {saveError ? "⚠️ 自動保存できません" : lastSavedAt ? `● 自動保存 ${pad2(new Date(lastSavedAt).getHours())}:${pad2(new Date(lastSavedAt).getMinutes())}` : "自動保存 待機中"}
@@ -1258,6 +1238,7 @@ export default function App() {
               roster={t.roster} ui={ui} patchUi={patchUi}
               deleteRosterRow={deleteRosterRow} updateRosterCell={updateRosterCell}
               addRosterColumn={addRosterColumn} renameRosterColumn={renameRosterColumn} deleteRosterColumn={deleteRosterColumn}
+              importRosterCSV={importRosterCSV} pasteRosterGrid={pasteRosterGrid}
             />
           ) : isAllView ? (
             <AggregateView
@@ -1272,7 +1253,7 @@ export default function App() {
               <AddPlayerArea
                 ui={ui} patchUi={patchUi} addPlayer={addPlayer} allOtherMatches={allOtherMatches}
                 copyPlayersFrom={copyPlayersFrom} findMatchByKey={findMatchByKey}
-                runPhotoScan={runPhotoScan} addPlayersFromPhotoResults={addPlayersFromPhotoResults}
+                roster={t.roster} addPlayersFromRoster={addPlayersFromRoster}
               />
             </>
           ) : (
@@ -1316,7 +1297,7 @@ export default function App() {
               <AddPlayerArea
                 ui={ui} patchUi={patchUi} addPlayer={addPlayer} allOtherMatches={allOtherMatches}
                 copyPlayersFrom={copyPlayersFrom} findMatchByKey={findMatchByKey}
-                runPhotoScan={runPhotoScan} addPlayersFromPhotoResults={addPlayersFromPhotoResults}
+                roster={t.roster} addPlayersFromRoster={addPlayersFromRoster}
               />
             </>
           )}
@@ -1457,7 +1438,7 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
         <div className="usa-panel-hint" style={{ marginTop: 8, marginBottom: 0 }}>1人が複数の賞を受賞してもかまいません。</div>
       </div>
 
-      {extraCols.length > 0 && (
+      {extraCols.length > 0 ? (
         <div className="usa-filter-bar">
           <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>名簿の列を表示:</span>
           {extraCols.map((c) => (
@@ -1470,6 +1451,10 @@ function AggregateView({ aggRows, roster, awards, ui, patchUi, setAwardWinner, a
               {c.name}
             </button>
           ))}
+        </div>
+      ) : (
+        <div className="usa-filter-bar">
+          <span style={{ fontSize: 12, color: "var(--usa-ink-soft)" }}>「📋 選手名簿」で列（学年など）を追加すると、ここに表示・絞り込み用の項目として選べるようになります。</span>
         </div>
       )}
       {activeExtraCols.length > 0 && (
@@ -1569,7 +1554,7 @@ function SettingsView({ state, t, ui, patchUi, setThemeColor, exportRosterCSV, i
 
       <div className="usa-panel">
         <div className="usa-panel-title">📋 選手名簿の入出力（{t.name}）</div>
-        <div className="usa-panel-hint">名簿の全列（背番号・名前・追加した列すべて）をCSVで書き出せます。取り込みは1列目→背番号、2列目→名前として扱い、3列目以降は見出し名で列を自動作成します（すでにある名前の選手は内容を上書き更新します）。</div>
+        <div className="usa-panel-hint">名簿の全列（背番号・名前・追加した列すべて）をCSVで書き出せます。取り込みは1列目→背番号、2列目→名前として扱います。ヘッダー行があれば見出し名で列を自動作成、無ければそのままの順番で既存の列に取り込みます（すでにある名前の選手は内容を上書き更新します）。表計算ソフトの表を選手名簿画面の左上のセルに直接貼り付けることもできます。</div>
         <div className="usa-panel-actions" style={{ justifyContent: "flex-start", marginBottom: 10 }}>
           <button className="usa-btn primary" onClick={() => exportRosterCSV(t.roster, t.name)}>CSV書き出し</button>
         </div>
@@ -1600,15 +1585,37 @@ function SettingsView({ state, t, ui, patchUi, setThemeColor, exportRosterCSV, i
 
 // ---- roster (選手名簿) view ----
 
-function RosterView({ roster, ui, patchUi, deleteRosterRow, updateRosterCell, addRosterColumn, renameRosterColumn, deleteRosterColumn }: {
+function RosterView({ roster, ui, patchUi, deleteRosterRow, updateRosterCell, addRosterColumn, renameRosterColumn, deleteRosterColumn, importRosterCSV, pasteRosterGrid }: {
   roster: RosterData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   deleteRosterRow: (id: string) => void; updateRosterCell: (rowId: string, colId: string, value: string) => void;
   addRosterColumn: (name: string) => void; renameRosterColumn: (colId: string, name: string) => void; deleteRosterColumn: (colId: string) => void;
+  importRosterCSV: (file: File) => void; pasteRosterGrid: (anchorRow: number, anchorCol: number, grid: string[][]) => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleCellPaste = (rowIndex: number, colIndex: number) => (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text");
+    if (!text.includes("\t") && !text.includes("\n") && !text.includes("\r")) return; // 単一値なら通常の貼り付けに任せる
+    e.preventDefault();
+    const grid = text.split(/\r\n|\n|\r/).filter((l, i, arr) => !(i === arr.length - 1 && l === "")).map((line) => line.split("\t"));
+    pasteRosterGrid(rowIndex, colIndex, grid);
+  };
+
   return (
     <>
       <div className="usa-empty" style={{ textAlign: "left", fontSize: 12, margin: "0 16px 12px" }}>
-        名簿は表形式で編集できます。列は自由に追加できますが、スタッツで使われるのは最初の2列（背番号・名前）だけです。「📋 コピー」で表の内容をタブ区切りテキストとしてコピーでき、表計算ソフトにそのまま貼り付けられます。
+        名簿は表形式で編集できます。列は自由に追加できますが、スタッツで使われるのは最初の2列（背番号・名前）だけです。「📋 コピー」で表の内容をタブ区切りテキストとしてコピーでき、表計算ソフトにそのまま貼り付けられます。逆に、表計算ソフトの内容をコピーしてこの表のセルに貼り付けることもできます（貼り付けたセルを起点に展開されます）。「📄 CSVを読み込む」で、ヘッダー行がある／ないどちらのCSVファイルも取り込めます。
+      </div>
+      <div className="usa-action-row">
+        <button className="usa-add-cta" onClick={() => fileInputRef.current?.click()}>📄 CSVを読み込む</button>
+        <input
+          ref={fileInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files && e.target.files[0];
+            if (f) importRosterCSV(f);
+            e.target.value = "";
+          }}
+        />
       </div>
       <div className="usa-table-wrap">
         <table className="usa-stats usa-roster-table">
@@ -1628,14 +1635,15 @@ function RosterView({ roster, ui, patchUi, deleteRosterRow, updateRosterCell, ad
             </tr>
           </thead>
           <tbody>
-            {roster.rows.map((r) => (
+            {roster.rows.map((r, rowIndex) => (
               <tr key={r.id}>
-                {roster.columns.map((c) => (
+                {roster.columns.map((c, colIndex) => (
                   <td key={c.id} style={{ padding: 4 }}>
                     <input
                       className={c.id === "number" ? "num" : undefined}
                       value={r.values[c.id] || ""}
                       onChange={(e) => updateRosterCell(r.id, c.id, e.target.value)}
+                      onPaste={handleCellPaste(rowIndex, colIndex)}
                       style={{ width: "100%", minWidth: c.id === "number" ? 60 : 100, padding: "8px 9px", borderRadius: 8, border: "1px solid var(--usa-line)", background: "var(--usa-chalk)", color: "var(--usa-ink)", fontSize: 13 }}
                     />
                   </td>
@@ -1650,7 +1658,7 @@ function RosterView({ roster, ui, patchUi, deleteRosterRow, updateRosterCell, ad
         </table>
       </div>
       {roster.rows.length === 0 && (
-        <div className="usa-empty">まだ選手が登録されていません。「＋ 行を追加」で選手を追加しましょう。</div>
+        <div className="usa-empty">まだ選手が登録されていません。「＋ 行を追加」で選手を追加しましょう。表計算ソフトの表を一番左上のセルに貼り付けることもできます。</div>
       )}
     </>
   );
@@ -1959,30 +1967,34 @@ function FilterPanel({ match, t, ui, patchUi, applyFilter, saveGroup, updateGrou
   );
 }
 
-// ---- add player / copy / photo ----
+// ---- add player / copy ----
 
-function AddPlayerArea({ ui, patchUi, addPlayer, allOtherMatches, copyPlayersFrom, findMatchByKey, runPhotoScan, addPlayersFromPhotoResults }: {
+function AddPlayerArea({ ui, patchUi, addPlayer, allOtherMatches, copyPlayersFrom, findMatchByKey, roster, addPlayersFromRoster }: {
   ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   addPlayer: (name: string, number: string) => void;
   allOtherMatches: () => { key: string; tournamentName: string; match: MatchData }[];
   copyPlayersFrom: (key: string | null, selected: Record<string, boolean>) => void;
   findMatchByKey: (key: string) => MatchData | null;
-  runPhotoScan: () => void;
-  addPlayersFromPhotoResults: (rows: PhotoResultRow[]) => void;
+  roster: RosterData;
+  addPlayersFromRoster: (selected: Record<string, boolean>) => void;
 }) {
   if (ui.copyOpen) {
     return <CopyPanel ui={ui} patchUi={patchUi} allOtherMatches={allOtherMatches} copyPlayersFrom={copyPlayersFrom} findMatchByKey={findMatchByKey} />;
   }
-  if (ui.photoOpen) {
-    return <PhotoPanel ui={ui} patchUi={patchUi} runPhotoScan={runPhotoScan} addPlayersFromPhotoResults={addPlayersFromPhotoResults} />;
+  if (ui.rosterPickOpen) {
+    return <RosterPickerPanel roster={roster} ui={ui} patchUi={patchUi} addPlayersFromRoster={addPlayersFromRoster} />;
   }
   if (!ui.addPlayerOpen) {
     const others = allOtherMatches();
     return (
       <div className="usa-action-row">
         <button className="usa-add-cta" onClick={() => patchUi({ addPlayerOpen: true })}>＋ 選手を追加</button>
+        {roster.rows.length > 0 && (
+          <button className="usa-add-cta" onClick={() => patchUi({ rosterPickOpen: true, rosterPickSelected: Object.fromEntries(roster.rows.map((r) => [r.id, true])) })}>
+            👥 名簿から
+          </button>
+        )}
         {others.length > 0 && <button className="usa-add-cta" onClick={() => patchUi({ copyOpen: true, copySourceKey: null, copySelected: {} })}>📋 他の試合から</button>}
-        <button className="usa-add-cta" onClick={() => patchUi({ photoOpen: true, photoResults: null, photoFile: null })}>📷 写真から</button>
       </div>
     );
   }
@@ -2062,59 +2074,39 @@ function CopyPanel({ ui, patchUi, allOtherMatches, copyPlayersFrom, findMatchByK
   );
 }
 
-function PhotoPanel({ ui, patchUi, runPhotoScan, addPlayersFromPhotoResults }: {
-  ui: UIState; patchUi: (patch: Partial<UIState>) => void;
-  runPhotoScan: () => void;
-  addPlayersFromPhotoResults: (rows: PhotoResultRow[]) => void;
+function RosterPickerPanel({ roster, ui, patchUi, addPlayersFromRoster }: {
+  roster: RosterData; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
+  addPlayersFromRoster: (selected: Record<string, boolean>) => void;
 }) {
-  if (ui.photoLoading) {
-    return (
-      <div className="usa-panel">
-        <div className="usa-panel-title">写真から選手を登録</div>
-        <div className="usa-spinner-row"><div className="usa-spinner" /><span>写真を読み取っています…</span></div>
-      </div>
-    );
-  }
-  if (ui.photoResults) {
-    const count = ui.photoResults.filter((r) => r.selected).length;
-    const updateRow = (id: string, patch: Partial<PhotoResultRow>) => {
-      patchUi({ photoResults: (ui.photoResults as PhotoResultRow[]).map((r) => (r.id === id ? { ...r, ...patch } : r)) });
-    };
-    return (
-      <div className="usa-panel">
-        <div className="usa-panel-title">読み取り結果を確認（誤りは修正できます）</div>
-        <div className="usa-roster-list">
-          {ui.photoResults.map((r) => (
-            <div key={r.id} className="usa-roster-row">
-              <input type="checkbox" checked={r.selected} onChange={() => updateRow(r.id, { selected: !r.selected })} />
-              <input className="num-mini num" value={r.number} placeholder="番号" onChange={(e) => updateRow(r.id, { number: e.target.value })} />
-              <input value={r.name} placeholder="名前" onChange={(e) => updateRow(r.id, { name: e.target.value })} />
-            </div>
-          ))}
-        </div>
-        <div className="usa-panel-actions" style={{ justifyContent: "space-between" }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="usa-btn ghost" onClick={() => patchUi({ photoResults: (ui.photoResults as PhotoResultRow[]).map((r) => ({ ...r, selected: true })) })}>全選択</button>
-            <button className="usa-btn ghost" onClick={() => patchUi({ photoResults: (ui.photoResults as PhotoResultRow[]).map((r) => ({ ...r, selected: false })) })}>全解除</button>
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="usa-btn ghost" onClick={() => patchUi({ photoOpen: false, photoResults: null, photoFile: null })}>キャンセル</button>
-            <button className="usa-btn primary" onClick={() => addPlayersFromPhotoResults((ui.photoResults as PhotoResultRow[]).filter((r) => r.selected))}>登録する ({count})</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const count = Object.values(ui.rosterPickSelected).filter(Boolean).length;
   return (
     <div className="usa-panel">
-      <div className="usa-panel-title">📷 写真から選手を登録</div>
-      <div className="usa-panel-hint">背番号と名前が写った選手名簿の写真を選ぶと、AIが読み取って一覧を作成します。読み取り後に内容を確認・修正してから登録できます。（Claude.aiのアーティファクトとして開いている場合のみ動作します）</div>
-      <div className="usa-file-input-wrap">
-        <input type="file" accept="image/*" onChange={(e) => patchUi({ photoFile: e.target.files && e.target.files[0] ? e.target.files[0] : null })} />
-      </div>
-      <div className="usa-panel-actions">
-        <button className="usa-btn ghost" onClick={() => patchUi({ photoOpen: false, photoResults: null, photoFile: null })}>キャンセル</button>
-        <button className="usa-btn primary" onClick={runPhotoScan}>読み取る</button>
+      <div className="usa-panel-title">選手名簿から出場選手を選択</div>
+      {roster.rows.length === 0 ? (
+        <div className="usa-panel-hint">選手名簿に選手が登録されていません。「📋 選手名簿」で登録してください。</div>
+      ) : (
+        <div className="usa-roster-list">
+          {roster.rows.map((r) => {
+            const name = r.values["name"] || "";
+            const number = r.values["number"] || "";
+            return (
+              <label key={r.id} className="usa-roster-row">
+                <input type="checkbox" checked={!!ui.rosterPickSelected[r.id]} onChange={() => patchUi({ rosterPickSelected: { ...ui.rosterPickSelected, [r.id]: !ui.rosterPickSelected[r.id] } })} />
+                <span>{name || <span style={{ color: "var(--usa-ink-soft)" }}>（名前未入力）</span>} {number && <span className="num" style={{ color: "var(--usa-ink-soft)" }}>#{number}</span>}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <div className="usa-panel-actions" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="usa-btn ghost" onClick={() => patchUi({ rosterPickSelected: Object.fromEntries(roster.rows.map((r) => [r.id, true])) })}>全選択</button>
+          <button className="usa-btn ghost" onClick={() => patchUi({ rosterPickSelected: {} })}>全解除</button>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="usa-btn ghost" onClick={() => patchUi({ rosterPickOpen: false, rosterPickSelected: {} })}>キャンセル</button>
+          <button className="usa-btn primary" onClick={() => addPlayersFromRoster(ui.rosterPickSelected)}>追加する ({count})</button>
+        </div>
       </div>
     </div>
   );
@@ -2196,6 +2188,7 @@ const CSS = `
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:8px; }
 .usa-brand { font-weight:700; font-size:16px; }
+.usa-version-badge { font-size:10px; font-weight:600; color:rgba(244,242,233,0.65); margin-left:6px; vertical-align:middle; }
 .usa-save-status { font-size:10px; color:rgba(244,242,233,0.65); white-space:nowrap; }
 .usa-save-status.ok { color:#BFE6CE; }
 .usa-save-status.err { color:#F3C6B8; font-weight:700; }
