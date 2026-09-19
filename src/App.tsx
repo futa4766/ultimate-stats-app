@@ -2391,7 +2391,8 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 .icon-img { width:16px; height:16px; border-radius:4px; vertical-align:-3px; margin-right:1px; }
 .icon-img-lg { width:36px; height:36px; border-radius:9px; display:block; margin:0 auto 8px; }
 .usa-filter-bar { display:flex; align-items:center; gap:8px; margin:0 16px 10px; flex-wrap:wrap; }
-.usa-table-wrap { overflow-x:auto; padding:0 0 4px; }
+.usa-table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; max-height:65vh; padding:0 0 4px; border:1px solid var(--usa-line); border-radius:10px; margin:0 16px; }
+.usa-table-wrap .usa-stats { margin:0; }
 .usa-stats { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; margin:0 16px; }
 .usa-stats th, .usa-stats td { border-bottom:1px solid var(--usa-line); }
 .usa-stats thead th { position:sticky; top:0; z-index:3; font-size:11px; color:var(--usa-ink-soft); font-weight:700; text-align:center; padding:6px 4px; background:var(--usa-chalk); white-space:nowrap; box-shadow:0 1px 0 var(--usa-line); }
@@ -2487,7 +2488,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
   .usa-print-title .t1 { font-size:17px; font-weight:800; color:#16211C; }
   .usa-print-title .t2 { font-size:11px; color:#647065; margin-top:2px; }
   .usa-main { padding:0; overflow:visible !important; }
-  .usa-table-wrap { overflow:visible !important; padding:0; }
+  .usa-table-wrap { overflow:visible !important; max-height:none !important; border:none !important; margin:0 !important; padding:0; }
   .usa-stats { margin:0 !important; width:100% !important; }
   .usa-stats thead th, .usa-stats th.sticky-no, .usa-stats td.sticky-no, .usa-stats th.sticky-name, .usa-stats td.sticky-name { position:static !important; box-shadow:none !important; }
   @page { size: landscape; margin: 10mm; }
