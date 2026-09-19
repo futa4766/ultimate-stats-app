@@ -550,8 +550,6 @@ export default function App() {
   const [undoStack, setUndoStack] = useState<LastAction[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const headerRef = useRef<HTMLElement | null>(null);
-  const [hdrH, setHdrH] = useState(0);
 
   const [ui, setUi] = useState<UIState>({
     addPlayerOpen: false,
@@ -597,11 +595,6 @@ export default function App() {
       setSaveError(true);
     }
   }, [state]);
-
-  // ---- measure header height for sticky table head offset ----
-  useEffect(() => {
-    if (headerRef.current) setHdrH(headerRef.current.getBoundingClientRect().height);
-  });
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -1245,7 +1238,7 @@ export default function App() {
     <div className="usa-root" style={{ ["--usa-pitch" as any]: state.themeColor || DEFAULT_PITCH, ["--usa-pitch-deep" as any]: shadeColor(state.themeColor || DEFAULT_PITCH, -0.35) }}>
       <style>{CSS}</style>
       <div className="usa-app">
-        <header className="usa-hdr" ref={headerRef}>
+        <header className="usa-hdr">
           <div className="usa-hdr-top">
             <span className="usa-brand"><img className="icon-img" src={FRISBEE_ICON} alt="" /> アルティメット スタッツ<span className="usa-version-badge">v{APP_VERSION}</span></span>
             <div className="usa-hdr-top-right">
@@ -1358,7 +1351,7 @@ export default function App() {
           <div className="t2">出力日時: {printStamp}</div>
         </div>
 
-        <main className="usa-main" style={{ ["--usa-hdr-h" as any]: `${hdrH}px` }}>
+        <main className="usa-main">
           {isSettingsView ? (
             <SettingsView
               state={state} ui={ui} patchUi={patchUi}
@@ -2346,6 +2339,8 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 
 // ---------------- styles ----------------
 const CSS = `
+html, body { height: 100%; margin: 0; overflow: hidden; }
+#root { height: 100%; }
 .usa-root {
   --usa-pitch:#1B4332; --usa-pitch-deep:#0F2A20; --usa-chalk:#FAF9F5; --usa-card:#FFFFFF;
   --usa-ink:#16211C; --usa-ink-soft:#647065; --usa-line:#E1DFD5;
@@ -2354,12 +2349,15 @@ const CSS = `
   --usa-shadow:rgba(15,42,32,0.12);
   font-family: 'Hiragino Kaku Gothic ProN','Noto Sans JP',system-ui,sans-serif;
   color: var(--usa-ink); background: var(--usa-chalk);
+  height: 100vh; height: 100dvh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
 .usa-root * { box-sizing: border-box; }
 .usa-root button { font-family: inherit; }
 .usa-root .num { font-variant-numeric: tabular-nums; }
-.usa-app { display:flex; flex-direction:column; min-height:100vh; }
-.usa-hdr { position: sticky; top:0; z-index:20; background: var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
+.usa-app { display:flex; flex-direction:column; height:100%; min-height:0; }
+.usa-hdr { flex: 0 0 auto; z-index:20; background: var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .usa-brand { font-weight:700; font-size:16px; }
@@ -2387,7 +2385,7 @@ const CSS = `
 .usa-icon-btn { border:none; background:rgba(255,255,255,0.1); color:#F4F2E9; width:30px; height:30px; border-radius:8px; font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
 .usa-icon-btn.active { background:var(--usa-disc); color:var(--usa-disc-ink); }
 .usa-print-title { display:none; }
-.usa-main { flex:1 1 auto; padding:16px 0 24px; }
+.usa-main { flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:16px 0 24px; }
 .usa-empty { margin:24px 16px; padding:28px 20px; text-align:center; background:var(--usa-card); border:1px dashed var(--usa-line); border-radius:16px; color:var(--usa-ink-soft); font-size:14px; line-height:1.7; }
 .usa-empty .disc { font-size:28px; display:block; margin-bottom:8px; }
 .icon-img { width:16px; height:16px; border-radius:4px; vertical-align:-3px; margin-right:1px; }
@@ -2396,7 +2394,7 @@ const CSS = `
 .usa-table-wrap { overflow-x:auto; padding:0 0 4px; }
 .usa-stats { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; margin:0 16px; }
 .usa-stats th, .usa-stats td { border-bottom:1px solid var(--usa-line); }
-.usa-stats thead th { position:sticky; top:var(--usa-hdr-h, 0px); z-index:3; font-size:11px; color:var(--usa-ink-soft); font-weight:700; text-align:center; padding:6px 4px; background:var(--usa-chalk); white-space:nowrap; box-shadow:0 1px 0 var(--usa-line); }
+.usa-stats thead th { position:sticky; top:0; z-index:3; font-size:11px; color:var(--usa-ink-soft); font-weight:700; text-align:center; padding:6px 4px; background:var(--usa-chalk); white-space:nowrap; box-shadow:0 1px 0 var(--usa-line); }
 .usa-stats thead th.miss-col { color:var(--usa-miss); }
 .usa-stats thead th.good-col { color:var(--usa-good-ink); }
 .usa-stats .sticky-no, .usa-stats .sticky-name { position:sticky; z-index:2; background:var(--usa-chalk); padding:8px 8px; }
@@ -2462,7 +2460,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 .usa-spinner-row { display:flex; align-items:center; gap:10px; padding:20px 4px; color:var(--usa-ink-soft); font-size:13px; }
 .usa-spinner { width:18px; height:18px; border-radius:50%; border:2.5px solid var(--usa-line); border-top-color:var(--usa-disc-deep); animation: usa-spin 0.8s linear infinite; }
 @keyframes usa-spin { to { transform: rotate(360deg); } }
-.usa-toolbar { position:sticky; bottom:0; z-index:20; display:flex; align-items:center; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:var(--usa-card); border-top:1px solid var(--usa-line); box-shadow:0 -2px 10px var(--usa-shadow); }
+.usa-toolbar { flex:0 0 auto; z-index:20; display:flex; align-items:center; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:var(--usa-card); border-top:1px solid var(--usa-line); box-shadow:0 -2px 10px var(--usa-shadow); }
 .usa-mode-toggle { display:flex; border-radius:10px; overflow:hidden; border:1px solid var(--usa-line); }
 .usa-mode-toggle-sm button { padding:6px 10px !important; font-size:12px !important; }
 .usa-mode-toggle button { border:none; padding:10px 14px; font-size:13px; font-weight:700; background:var(--usa-chalk); color:var(--usa-ink-soft); cursor:pointer; }
@@ -2480,6 +2478,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
 .usa-help-title { font-size:13px; font-weight:800; color:var(--usa-ink); margin-bottom:4px; }
 .usa-help-section p { margin:0 0 8px; font-size:13px; line-height:1.7; color:var(--usa-ink-soft); }
 @media print {
+  html, body, .usa-root { height:auto !important; overflow:visible !important; }
   .usa-hdr, .usa-toolbar, .usa-action-row, .usa-bottom-actions, .usa-panel, .usa-trash-btn, .usa-toast-root, .usa-filter-bar, .usa-modal-backdrop { display:none !important; }
   .usa-panel.usa-print-visible { display:block !important; border:none; padding:0; margin:16px 16px 0; }
   .usa-panel.usa-print-visible .usa-tool-btn, .usa-panel.usa-print-visible select, .usa-panel.usa-print-visible .usa-trash-btn { display:none !important; }
@@ -2487,7 +2486,7 @@ tr.usa-mom-row td.sticky-name, tr.usa-mom-row td.sticky-no { background:#FFF8EC;
   .usa-print-title { display:block; margin:0 0 14px; padding:0 4px; }
   .usa-print-title .t1 { font-size:17px; font-weight:800; color:#16211C; }
   .usa-print-title .t2 { font-size:11px; color:#647065; margin-top:2px; }
-  .usa-main { padding:0; }
+  .usa-main { padding:0; overflow:visible !important; }
   .usa-table-wrap { overflow:visible !important; padding:0; }
   .usa-stats { margin:0 !important; width:100% !important; }
   .usa-stats thead th, .usa-stats th.sticky-no, .usa-stats td.sticky-no, .usa-stats th.sticky-name, .usa-stats td.sticky-name { position:static !important; box-shadow:none !important; }
