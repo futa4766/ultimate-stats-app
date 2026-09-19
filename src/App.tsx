@@ -2363,7 +2363,7 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 .usa-root .num { font-variant-numeric: tabular-nums; }
 .usa-app { display:flex; flex-direction:column; height:100%; min-height:0; }
 .usa-hdr { flex: 0 0 auto; z-index:20; background: var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
-.usa-hdr-band { background: url(${HDR_BG_IMAGE}) no-repeat center/cover; }
+.usa-hdr-band { background: url(${HDR_BG_IMAGE}) no-repeat center/contain; }
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .usa-brand { font-weight:700; font-size:16px; }
