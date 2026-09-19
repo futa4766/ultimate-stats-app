@@ -91,6 +91,7 @@ interface AppState {
   sortMode: "reg" | "number";
   headerCollapsed?: boolean;
   themeColor?: string;
+  headerBg?: "photo" | "color";
   roster: RosterData;
   view: "tournament" | "roster" | "settings";
 }
@@ -213,7 +214,7 @@ function defaultTournament(name?: string): TournamentData {
 
 function defaultState(): AppState {
   const t = defaultTournament();
-  return { tournaments: [t], activeTournamentId: t.id, mode: "add", sortMode: "reg", headerCollapsed: false, roster: defaultRoster(), view: "tournament" };
+  return { tournaments: [t], activeTournamentId: t.id, mode: "add", sortMode: "reg", headerCollapsed: false, roster: defaultRoster(), view: "tournament", headerBg: "photo" };
 }
 
 // 旧バージョン（大会ごとの名簿）からの移行：全大会の名簿を選手名で名寄せしながら1つの共通名簿にまとめる
@@ -269,6 +270,7 @@ function loadState(): AppState {
       });
       parsed.roster = roster;
       if (parsed.view !== "tournament" && parsed.view !== "roster" && parsed.view !== "settings") parsed.view = "tournament";
+      if (parsed.headerBg !== "photo" && parsed.headerBg !== "color") parsed.headerBg = "photo";
       return parsed;
     }
     return defaultState();
@@ -1117,6 +1119,7 @@ export default function App() {
 
   // ---- theme color ----
   const setThemeColor = (color: string | undefined) => updateState((s) => { s.themeColor = color; });
+  const setHeaderBg = (bg: "photo" | "color") => updateState((s) => { s.headerBg = bg; });
 
   // ---- full data backup (全大会・全試合一括CSV) ----
   const exportAllDataCSV = () => {
@@ -1239,7 +1242,7 @@ export default function App() {
     <div className="usa-root" style={{ ["--usa-pitch" as any]: state.themeColor || DEFAULT_PITCH, ["--usa-pitch-deep" as any]: shadeColor(state.themeColor || DEFAULT_PITCH, -0.35) }}>
       <style>{CSS}</style>
       <div className="usa-app">
-        <header className="usa-hdr">
+        <header className={"usa-hdr" + (state.headerBg === "photo" ? " has-photo" : "")}>
           <div className="usa-hdr-top">
             <span className="usa-brand"><img className="icon-img" src={FRISBEE_ICON} alt="" /> アルティメット スタッツ<span className="usa-version-badge">v{APP_VERSION}</span></span>
             <div className="usa-hdr-top-right">
@@ -1360,7 +1363,7 @@ export default function App() {
           {isSettingsView ? (
             <SettingsView
               state={state} ui={ui} patchUi={patchUi}
-              setThemeColor={setThemeColor}
+              setThemeColor={setThemeColor} setHeaderBg={setHeaderBg}
               exportRosterCSV={exportRosterCSV} importRosterCSV={importRosterCSV}
               exportAllDataCSV={exportAllDataCSV} importAllDataCSV={importAllDataCSV}
             />
@@ -1684,17 +1687,28 @@ const PRESET_COLORS = [
   "#0D3B66", "#6A040F", "#5A189A", "#014F86", "#9D0208", "#283618", "#4A4E69", "#6D4C41",
 ];
 
-function SettingsView({ state, ui, patchUi, setThemeColor, exportRosterCSV, importRosterCSV, exportAllDataCSV, importAllDataCSV }: {
+function SettingsView({ state, ui, patchUi, setThemeColor, setHeaderBg, exportRosterCSV, importRosterCSV, exportAllDataCSV, importAllDataCSV }: {
   state: AppState; ui: UIState; patchUi: (patch: Partial<UIState>) => void;
   setThemeColor: (color: string | undefined) => void;
+  setHeaderBg: (bg: "photo" | "color") => void;
   exportRosterCSV: (roster: RosterData) => void;
   importRosterCSV: (file: File) => void;
   exportAllDataCSV: () => void;
   importAllDataCSV: (file: File) => void;
 }) {
   const color = state.themeColor || DEFAULT_PITCH;
+  const headerBg = state.headerBg || "photo";
   return (
     <>
+      <div className="usa-panel">
+        <div className="usa-panel-title">🖼️ ヘッダーの背景</div>
+        <div className="usa-mode-toggle" style={{ display: "inline-flex", marginBottom: 8 }}>
+          <button className={headerBg === "photo" ? "active" : ""} onClick={() => setHeaderBg("photo")}>写真</button>
+          <button className={headerBg === "color" ? "active" : ""} onClick={() => setHeaderBg("color")}>単色</button>
+        </div>
+        <div className="usa-panel-hint" style={{ marginBottom: 0 }}>「単色」を選ぶと、下のチームカラーだけの背景になります。</div>
+      </div>
+
       <div className="usa-panel">
         <div className="usa-panel-title">🎨 ヘッダーの色（チームカラー）</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -1705,7 +1719,7 @@ function SettingsView({ state, ui, patchUi, setThemeColor, exportRosterCSV, impo
           ))}
           <button className="usa-btn ghost" onClick={() => setThemeColor(undefined)}>初期値に戻す</button>
         </div>
-        <div className="usa-panel-hint" style={{ marginBottom: 0 }}>選んだ色はこのアプリ全体（すべての大会）のヘッダーに適用されます。</div>
+        <div className="usa-panel-hint" style={{ marginBottom: 0 }}>選んだ色はこのアプリ全体（すべての大会）のヘッダーに適用されます。背景を「写真」にしている間は、タブなど一部の要素にだけ使われます。</div>
       </div>
 
       <div className="usa-panel">
@@ -2362,7 +2376,8 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 .usa-root button { font-family: inherit; }
 .usa-root .num { font-variant-numeric: tabular-nums; }
 .usa-app { display:flex; flex-direction:column; height:100%; min-height:0; }
-.usa-hdr { flex: 0 0 auto; z-index:20; background: linear-gradient(180deg, rgba(15,42,32,0.55), rgba(15,42,32,0.82)), url(${HDR_PHOTO}) no-repeat center/cover, var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
+.usa-hdr { flex: 0 0 auto; z-index:20; background: var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
+.usa-hdr.has-photo { background: url(${HDR_PHOTO}) no-repeat center/cover, var(--usa-pitch); }
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .usa-brand { font-weight:700; font-size:16px; }
