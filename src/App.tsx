@@ -123,6 +123,8 @@ interface UIState {
   addingRosterColumn: boolean;
   aggSortKey: string | null;
   aggSortDir: "asc" | "desc";
+  matchSortKey: string | null;
+  matchSortDir: "asc" | "desc";
   aggExtraColumnIds: string[];
   aggColumnFilters: Record<string, string>;
   addingAward: boolean;
@@ -138,7 +140,7 @@ interface UIState {
 const STORAGE_KEY = "ultimateStatsAppTsxV1";
 const ALL_ID = "__ALL__";
 const DEFAULT_PITCH = "#1B4332";
-const APP_VERSION = "1.1";
+const APP_VERSION = "1.2";
 
 function defaultAwards(): TournamentAward[] {
   return [];
@@ -247,6 +249,8 @@ function migrateRosterToGlobal(parsed: any): RosterData {
   return merged;
 }
 
+const OLD_DEFAULT_AWARD_NAMES = ["MVP", "敢闘賞", "アシスト王", "得点王", "スコアリーダー", "ブロック王"];
+
 function loadState(): AppState {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -257,6 +261,9 @@ function loadState(): AppState {
       parsed.tournaments.forEach((t: TournamentData) => {
         if (!Array.isArray(t.groups)) t.groups = [];
         if (!Array.isArray(t.awards)) t.awards = defaultAwards();
+        // 以前デフォルトで入っていた賞（未選出のまま残っているもの）は、今は自動計算される
+        // ので非表示にする。実際に受賞者を選んでいるものは残す。
+        t.awards = t.awards.filter((a) => !(OLD_DEFAULT_AWARD_NAMES.includes(a.name) && !a.playerName));
         delete (t as any).roster;
       });
       parsed.roster = roster;
@@ -404,6 +411,31 @@ function joinRosterValue(roster: RosterData, colId: string, playerName: string):
   return row ? (row.values[colId] || "") : "";
 }
 
+function sortMatchPlayers(players: Player[], key: string | null, dir: "asc" | "desc"): Player[] {
+  if (!key) return players;
+  const factor = dir === "asc" ? 1 : -1;
+  return [...players].sort((a, b) => {
+    if (key === "name") return factor * a.name.localeCompare(b.name, "ja");
+    if (key === "number") {
+      const an = parseFloat(a.number), bn = parseFloat(b.number);
+      const av = a.number !== "" && !isNaN(an), bv = b.number !== "" && !isNaN(bn);
+      if (av && bv) return factor * (an - bn);
+      if (av) return -1;
+      if (bv) return 1;
+      return 0;
+    }
+    if (key === "passRate") {
+      const av = passRate(a) ?? -1, bv = passRate(b) ?? -1;
+      return factor * (av - bv);
+    }
+    if ((FIELDS as { key: string }[]).some((f) => f.key === key)) {
+      const av = (a as any)[key] || 0, bv = (b as any)[key] || 0;
+      return factor * (av - bv);
+    }
+    return 0;
+  });
+}
+
 function sortAggRows(rows: AggRow[], key: string | null, dir: "asc" | "desc", roster: RosterData): AggRow[] {
   if (!key) return rows;
   const factor = dir === "asc" ? 1 : -1;
@@ -542,6 +574,8 @@ export default function App() {
     addingRosterColumn: false,
     aggSortKey: null,
     aggSortDir: "desc",
+    matchSortKey: null,
+    matchSortDir: "desc",
     aggExtraColumnIds: [],
     aggColumnFilters: {},
     addingAward: false,
@@ -706,6 +740,7 @@ export default function App() {
       addPlayerOpen: false, renamingMatch: false, editingPlayerId: null, confirmDeletePlayer: null,
       copyOpen: false, copySourceKey: null, copySelected: {},
       rosterPickOpen: false, rosterPickSelected: {},
+      matchSortKey: null, matchSortDir: "desc",
       filterOpen: false, filterDraft: {}, filterLoadedGroupId: null, savingGroupNameOpen: false, confirmDeleteGroup: null,
     });
   };
@@ -1191,7 +1226,16 @@ export default function App() {
   const displayPlayers = filterActive && match
     ? rawPlayers.filter((p) => (match.activeFilterNames as string[]).includes(p.name.trim()))
     : rawPlayers;
-  const players = sortPlayers(displayPlayers, state.sortMode);
+  const players = sortMatchPlayers(sortPlayers(displayPlayers, state.sortMode), ui.matchSortKey, ui.matchSortDir);
+  const toggleMatchSort = (key: string) => {
+    if (ui.matchSortKey === key) {
+      patchUi({ matchSortDir: ui.matchSortDir === "asc" ? "desc" : "asc" });
+    } else {
+      const numericDefault = key === "name" || key === "number";
+      patchUi({ matchSortKey: key, matchSortDir: numericDefault ? "asc" : "desc" });
+    }
+  };
+  const matchSortArrow = (key: string) => (ui.matchSortKey === key ? (ui.matchSortDir === "asc" ? " ▲" : " ▼") : "");
   const aggRows = isAllView ? aggregateTournament(t, state.sortMode) : [];
 
   const now = new Date();
@@ -1366,10 +1410,14 @@ export default function App() {
                   <table className="usa-stats">
                     <thead>
                       <tr>
-                        <th className="sticky-no">NO</th>
-                        <th className="sticky-name">選手</th>
-                        {FIELDS.map((f) => <th key={f.key} className={f.kind === "miss" ? "miss-col" : f.kind === "good" ? "good-col" : ""}>{f.label}</th>)}
-                        <th>パス成功率</th>
+                        <th className="sticky-no" style={{ cursor: "pointer" }} onClick={() => toggleMatchSort("number")}>NO{matchSortArrow("number")}</th>
+                        <th className="sticky-name" style={{ cursor: "pointer" }} onClick={() => toggleMatchSort("name")}>選手{matchSortArrow("name")}</th>
+                        {FIELDS.map((f) => (
+                          <th key={f.key} className={f.kind === "miss" ? "miss-col" : f.kind === "good" ? "good-col" : ""} style={{ cursor: "pointer" }} onClick={() => toggleMatchSort(f.key)}>
+                            {f.label}{matchSortArrow(f.key)}
+                          </th>
+                        ))}
+                        <th style={{ cursor: "pointer" }} onClick={() => toggleMatchSort("passRate")}>パス成功率{matchSortArrow("passRate")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2348,12 +2396,13 @@ const CSS = `
 .usa-table-wrap { overflow-x:auto; padding:0 0 4px; }
 .usa-stats { border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; margin:0 16px; }
 .usa-stats th, .usa-stats td { border-bottom:1px solid var(--usa-line); }
-.usa-stats thead th { position:static; z-index:3; font-size:11px; color:var(--usa-ink-soft); font-weight:700; text-align:center; padding:6px 4px; background:var(--usa-chalk); white-space:nowrap; box-shadow:0 1px 0 var(--usa-line); }
+.usa-stats thead th { position:sticky; top:var(--usa-hdr-h, 0px); z-index:3; font-size:11px; color:var(--usa-ink-soft); font-weight:700; text-align:center; padding:6px 4px; background:var(--usa-chalk); white-space:nowrap; box-shadow:0 1px 0 var(--usa-line); }
 .usa-stats thead th.miss-col { color:var(--usa-miss); }
 .usa-stats thead th.good-col { color:var(--usa-good-ink); }
 .usa-stats .sticky-no, .usa-stats .sticky-name { position:sticky; z-index:2; background:var(--usa-chalk); padding:8px 8px; }
 .usa-stats th.sticky-no, .usa-stats td.sticky-no { left:0; text-align:center; min-width:52px; max-width:52px; }
 .usa-stats th.sticky-name, .usa-stats td.sticky-name { left:52px; text-align:left; min-width:118px; max-width:118px; }
+.usa-stats thead th.sticky-no, .usa-stats thead th.sticky-name { z-index:4; }
 .usa-stats tbody td.sticky-no, .usa-stats tbody td.sticky-name { background:var(--usa-card); }
 .usa-stats tbody tr:nth-child(even) td.sticky-no, .usa-stats tbody tr:nth-child(even) td.sticky-name { background:var(--usa-chalk); }
 .no-value { font-size:19px; font-weight:800; color:var(--usa-ink); }
