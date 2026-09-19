@@ -1266,32 +1266,32 @@ export default function App() {
             </div>
           ) : (
             <>
-              <div className="usa-tabs">
-                {state.tournaments.map((tt) => (
-                  ui.confirmDeleteTournament === tt.id ? (
-                    <div key={tt.id} className="usa-tab tourney active" style={{ background: "var(--usa-miss)", color: "#fff" }}>
-                      <span>削除する？</span>
-                      <button className="x" style={{ opacity: 1 }} onClick={() => deleteTournament(tt.id)}>✔</button>
-                      <button className="x" onClick={() => patchUi({ confirmDeleteTournament: null })}>✕</button>
-                    </div>
+              <div className="usa-hdr-band">
+                <div className="usa-tabs">
+                  {state.tournaments.map((tt) => (
+                    ui.confirmDeleteTournament === tt.id ? (
+                      <div key={tt.id} className="usa-tab tourney active" style={{ background: "var(--usa-miss)", color: "#fff" }}>
+                        <span>削除する？</span>
+                        <button className="x" style={{ opacity: 1 }} onClick={() => deleteTournament(tt.id)}>✔</button>
+                        <button className="x" onClick={() => patchUi({ confirmDeleteTournament: null })}>✕</button>
+                      </div>
+                    ) : (
+                      <div key={tt.id} className={"usa-tab tourney" + (state.view === "tournament" && tt.id === t.id ? " active" : "")} onClick={() => selectTournament(tt.id)}>
+                        <span><img className="icon-img" src={TROPHY_ICON} alt="" /> {tt.name}</span>
+                        {state.tournaments.length > 1 && (
+                          <button className="x" onClick={(e) => { e.stopPropagation(); patchUi({ confirmDeleteTournament: tt.id }); }}>✕</button>
+                        )}
+                      </div>
+                    )
+                  ))}
+                  {ui.newTournamentOpen ? (
+                    <NewTabForm placeholder={`${todayLabel()} 大会`} onConfirm={addTournament} onCancel={() => patchUi({ newTournamentOpen: false })} light />
                   ) : (
-                    <div key={tt.id} className={"usa-tab tourney" + (state.view === "tournament" && tt.id === t.id ? " active" : "")} onClick={() => selectTournament(tt.id)}>
-                      <span><img className="icon-img" src={TROPHY_ICON} alt="" /> {tt.name}</span>
-                      {state.tournaments.length > 1 && (
-                        <button className="x" onClick={(e) => { e.stopPropagation(); patchUi({ confirmDeleteTournament: tt.id }); }}>✕</button>
-                      )}
-                    </div>
-                  )
-                ))}
-                {ui.newTournamentOpen ? (
-                  <NewTabForm placeholder={`${todayLabel()} 大会`} onConfirm={addTournament} onCancel={() => patchUi({ newTournamentOpen: false })} light />
-                ) : (
-                  <button className="usa-tab-new" onClick={() => patchUi({ newTournamentOpen: true })}>＋ 新しい大会</button>
-                )}
-              </div>
+                    <button className="usa-tab-new" onClick={() => patchUi({ newTournamentOpen: true })}>＋ 新しい大会</button>
+                  )}
+                </div>
 
-              {state.view === "tournament" && (
-                <>
+                {state.view === "tournament" && (
                   <div className="usa-hdr-bottom tourney-row">
                     {ui.renamingTournament ? (
                       <RenameForm value={t.name} onConfirm={renameTournament} onCancel={() => patchUi({ renamingTournament: false })} />
@@ -1302,7 +1302,11 @@ export default function App() {
                       </>
                     )}
                   </div>
+                )}
+              </div>
 
+              {state.view === "tournament" && (
+                <>
                   <div className="usa-tabs">
                     <div className={"usa-tab pinned" + (isAllView ? " active" : "")} onClick={() => selectMatch(ALL_ID)}>
                       <span><img className="icon-img" src={AGG_ICON} alt="" /> 大会全体の集計</span>
@@ -2358,7 +2362,8 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 .usa-root button { font-family: inherit; }
 .usa-root .num { font-variant-numeric: tabular-nums; }
 .usa-app { display:flex; flex-direction:column; height:100%; min-height:0; }
-.usa-hdr { flex: 0 0 auto; z-index:20; background: url(${HDR_BG_IMAGE}) no-repeat bottom / 100% auto, var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
+.usa-hdr { flex: 0 0 auto; z-index:20; background: var(--usa-pitch); color:#F4F2E9; box-shadow:0 2px 10px var(--usa-shadow); }
+.usa-hdr-band { background: url(${HDR_BG_IMAGE}) no-repeat center/cover; }
 .usa-hdr-top { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 6px; gap:8px; }
 .usa-hdr-top-right { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .usa-brand { font-weight:700; font-size:16px; }
